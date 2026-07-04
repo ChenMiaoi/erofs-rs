@@ -1,0 +1,133 @@
+name: Periodic EROFS Fuzzing
+
+on:
+  schedule:
+    # Run weekly on Sunday at 02:00 UTC.
+    - cron: '0 2 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  userspace-fuzzing:
+    name: Userspace structured and libFuzzer campaign
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Initialize shallow submodules
+        run: |
+          git submodule sync --recursive
+          git submodule update --init --recursive --depth=1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.85.0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            autoconf automake bc bison build-essential clang cpio flex gzip \
+            liblz4-dev liblzma-dev libssl-dev libtool libtool-bin \
+            libzstd-dev llvm openssl pkg-config qemu-system-x86 rsync \
+            uuid-dev zlib1g-dev
+
+      - name: Build erofs-utils
+        run: make erofs-utils
+
+      - name: Install fsck fixture
+        run: cp build/erofs-utils/fsck/fsck.erofs tests/fixtures/fsck.erofs
+
+      - name: Run Rust tests
+        run: RUSTFLAGS="-D warnings" cargo test --locked
+
+      - name: Generate seed corpus
+        run: |
+          ./scripts/generate-seed-corpus.sh
+          ./scripts/generate-complex-seeds.sh
+
+      - name: Build erofs-rs CLI
+        run: cargo build --locked --release
+
+      - name: Run structured mutations (raw checksum barrier)
+        run: |
+          mkdir -p corpus/mutated/superblock corpus/mutated/inode corpus/mutated/dirent
+          ./target/release/erofs-rs mutate \
+            --input corpus/seeds/single.erofs \
+            --output-dir corpus/mutated/superblock/ \
+            --manifest corpus/mutated/superblock/manifest.txt \
+            --fsck build/erofs-utils/fsck/fsck.erofs \
+            --target superblock
+          ./target/release/erofs-rs mutate \
+            --input corpus/seeds/single.erofs \
+            --output-dir corpus/mutated/inode/ \
+            --manifest corpus/mutated/inode/manifest.txt \
+            --fsck build/erofs-utils/fsck/fsck.erofs \
+            --target inode
+          ./target/release/erofs-rs mutate \
+            --input corpus/seeds/single.erofs \
+            --output-dir corpus/mutated/dirent/ \
+            --manifest corpus/mutated/dirent/manifest.txt \
+            --fsck build/erofs-utils/fsck/fsck.erofs \
+            --target dirent
+
+      - name: Collect artifact corpus
+        run: |
+          ./target/release/erofs-rs corpus \
+            --input-dir corpus/mutated/ \
+            --output-dir corpus/artifacts/ \
+            --report corpus/artifacts/report.txt
+
+      - name: Run erofs-utils safety smoke
+        run: |
+          ARTIFACT_DIRS="corpus/mutated corpus/artifacts" \
+            LOG_DIR=corpus/erofs-utils-safety \
+            ./scripts/erofs-utils-safety-smoke.sh
+
+      - name: Build fuzzer
+        run: ./scripts/build-erofs-utils-fuzzing.sh
+
+      - name: Run short fuzzing session
+        run: |
+          mkdir -p corpus/fuzz-out
+          ./build/erofs-utils-fuzz/fsck/fuzz_erofsfsck \
+            corpus/seeds/ corpus/fuzz-out/ \
+            -max_total_time=120 -print_final_stats=1 \
+            2>&1 | tee corpus/fuzz-out/fuzz.log
+
+      - name: Build sanitizer erofs-utils
+        run: ./scripts/build-erofs-utils-sanitized.sh
+
+      - name: Run sanitizer erofs-utils safety smoke
+        run: |
+          MKFS="$PWD/build/erofs-utils-sanitized/mkfs/mkfs.erofs" \
+          FSCK="$PWD/build/erofs-utils-sanitized/fsck/fsck.erofs" \
+          DUMP="$PWD/build/erofs-utils-sanitized/dump/dump.erofs" \
+          INPUT_DIR="$PWD/corpus/seeds" \
+          ARTIFACT_DIRS="$PWD/corpus/mutated $PWD/corpus/artifacts" \
+          LOG_DIR="$PWD/corpus/erofs-utils-safety-sanitized" \
+          TOOL_TIMEOUT=15s \
+          MAX_IMAGES=100 \
+            ./scripts/erofs-utils-safety-smoke.sh
+
+      - name: Upload fuzzing artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: erofs-fuzzing-artifacts
+          path: |
+            corpus/artifacts/
+            corpus/fuzz-out/
+            corpus/erofs-utils-safety/
+            corpus/erofs-utils-safety-sanitized/
+            corpus/mutated/*/manifest.txt
+          retention-days: 14

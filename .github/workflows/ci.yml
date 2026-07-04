@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-gate:
+    name: Rust format, check, and lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.85.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Check all targets
+        run: RUSTFLAGS="-D warnings" cargo check --locked --all-targets
+
+      - name: Run library and binary tests
+        run: RUSTFLAGS="-D warnings" cargo test --locked --lib --bins
+
+      - name: Run Clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+  userspace-integration:
+    name: Userspace fsck and fuzz smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: rust-gate
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Initialize shallow submodules
+        run: |
+          git submodule sync --recursive
+          git submodule update --init --recursive --depth=1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.85.0
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            autoconf automake bc bison build-essential cpio flex gzip \
+            liblz4-dev liblzma-dev libssl-dev libtool libtool-bin \
+            libzstd-dev openssl pkg-config qemu-system-x86 rsync \
+            uuid-dev zlib1g-dev
+
+      - name: Build erofs-utils
+        run: make erofs-utils
+
+      - name: Install fsck fixture
+        run: cp build/erofs-utils/fsck/fsck.erofs tests/fixtures/fsck.erofs
+
+      - name: Run full Rust tests
+        run: RUSTFLAGS="-D warnings" cargo test --locked
+
+      - name: Generate seed corpus
+        run: |
+          ./scripts/generate-seed-corpus.sh
+          ./scripts/generate-complex-seeds.sh
+
+      - name: Run erofs-utils safety smoke
+        run: ./scripts/erofs-utils-safety-smoke.sh
+
+      - name: Run deterministic fuzz smoke
+        run: |
+          cargo run --locked -- fuzz \
+            --input-dir corpus/seeds \
+            --output-dir /tmp/erofs-rs-fuzz-smoke \
+            --max-time 5 \
+            --seed 12345 \
+            --fsck build/erofs-utils/fsck/fsck.erofs \
+            --no-tui
+
+      - name: Upload smoke artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: erofs-rs-fuzz-smoke
+          path: /tmp/erofs-rs-fuzz-smoke/
+          retention-days: 7
+
+      - name: Upload erofs-utils safety logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: erofs-utils-safety-smoke
+          path: build/erofs-utils-safety/
+          retention-days: 7

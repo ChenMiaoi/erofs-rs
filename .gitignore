@@ -1,0 +1,42 @@
+# Rust build output
+/target/
+
+# Project-generated build and replay artifacts
+/build/
+/corpus/
+
+# Local test dependency built from vendor/erofs-utils
+/tests/fixtures/fsck.erofs
+
+# Logs, reports, and crash/fuzz byproducts
+*.log
+*.profraw
+*.profdata
+*.gcda
+*.gcno
+*.sancov
+*.stackdump
+core
+core.*
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+*~
+**/*.rs.bk
+
+# Editor and OS metadata
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Local environment files
+.env
+.env.*
+!.env.example

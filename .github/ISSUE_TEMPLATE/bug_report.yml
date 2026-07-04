@@ -1,0 +1,69 @@
+name: Bug report
+description: Report a tool, parser, fsck integration, or kernel replay bug.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please keep reports reproducible and concrete. For security-sensitive kernel behavior, avoid publishing exploit details until a maintainer confirms the handling path.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What failed, and what did you expect instead?
+      placeholder: "The parser accepts ..., but it should reject ..."
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Exact commands, input paths, seeds, and artifacts needed to reproduce.
+      placeholder: |
+        git submodule update --init --depth=1
+        make erofs-utils
+        cargo run -- ...
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed output
+      description: Paste the relevant stderr/stdout, report lines, fsck output, or QEMU log excerpt.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Rust version, OS, kernel version, erofs-utils commit, and whether vendor submodules were used.
+      placeholder: |
+        rustc --version:
+        uname -a:
+        vendor/erofs-utils commit:
+        vendor/linux commit:
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - image parsing
+        - checksum
+        - inode or dirent discovery
+        - mutation or fuzzing
+        - fsck integration
+        - corpus classification
+        - QEMU or kernel replay
+        - CI or scripts
+        - documentation
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Additional notes
+      description: Any bisect result, suspected regression range, or related upstream behavior.

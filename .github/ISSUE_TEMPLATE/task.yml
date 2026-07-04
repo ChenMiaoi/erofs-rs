@@ -1,0 +1,34 @@
+name: Task or enhancement
+description: Propose a focused improvement to tooling, tests, docs, or CI.
+title: "[task] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What should change, and why is it useful for EROFS fuzzing or replay work?
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: Files, commands, formats, or workflows expected to change.
+    validations:
+      required: true
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility and risk
+      description: CLI compatibility, corpus/report format impact, fixture impact, or kernel replay risk.
+  - type: textarea
+    id: tests
+    attributes:
+      label: Expected tests
+      description: Commands that should pass before the task is closed.
+      placeholder: |
+        cargo fmt --check
+        RUSTFLAGS="-D warnings" cargo check --all-targets
+        RUSTFLAGS="-D warnings" cargo test
+        cargo clippy --all-targets --all-features -- -D warnings

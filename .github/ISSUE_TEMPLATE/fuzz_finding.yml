@@ -1,0 +1,60 @@
+name: Fuzz finding
+description: Report a reproducible fuzzing artifact or campaign result.
+title: "[fuzz] "
+labels: ["fuzz", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A fuzz finding is not automatically a kernel bug. Please include enough data to classify it as an expected rejection, tool issue, fsck behavior, or dangerous kernel behavior.
+  - type: input
+    id: seed
+    attributes:
+      label: RNG seed
+      description: The `--seed` value from the fuzz command or report.
+      placeholder: "12345"
+    validations:
+      required: true
+  - type: input
+    id: artifact
+    attributes:
+      label: Artifact path or digest
+      description: Local artifact path, uploaded artifact name, or hash.
+      placeholder: "fuzz_single_iter42.erofs / sha256..."
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: Exact command used to generate or replay the artifact.
+      render: shell
+      placeholder: |
+        erofs-rs fuzz --input-dir corpus/seeds --output-dir /tmp/fuzz-out --seed 12345 --fsck build/erofs-utils/fsck/fsck.erofs
+    validations:
+      required: true
+  - type: textarea
+    id: classification
+    attributes:
+      label: Classification and output
+      description: Include the report line, fsck classification, fsck output, and any QEMU replay classification.
+      render: text
+      placeholder: |
+        Fsck findings: ...
+        iter=... seed=... result=... reason=...
+        REJECTED: ...
+    validations:
+      required: true
+  - type: checkboxes
+    id: replay
+    attributes:
+      label: Replay coverage
+      options:
+        - label: Replayed with `fsck.erofs`.
+        - label: Replayed with `make smoke-malformed MALFORMED_IMG=...`.
+        - label: Checked for panic, BUG, KASAN, UBSAN, lockdep, hung task, or unexpected QEMU exit.
+  - type: textarea
+    id: triage
+    attributes:
+      label: Triage notes
+      description: Why this is interesting, or why it may be an expected malformed-image rejection.
