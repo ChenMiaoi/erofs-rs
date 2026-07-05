@@ -26,6 +26,8 @@ pub enum Commands {
     Triage(TriageArgs),
     /// Run userspace oracle checks over one image.
     Oracle(OracleArgs),
+    /// Convert a captured QEMU dmesg log into a kernel replay report.
+    KernelReport(KernelReportArgs),
     /// Print superblock, inode, and dirent information.
     Info(InfoArgs),
 }
@@ -285,6 +287,22 @@ pub struct OracleArgs {
         help = "Address-space limit in MiB for each tool execution on Unix"
     )]
     pub rss_limit_mb: Option<u64>,
+}
+
+#[derive(Parser, Debug)]
+pub struct KernelReportArgs {
+    #[arg(long, help = "Captured QEMU dmesg or console log")]
+    pub dmesg: String,
+    #[arg(long, help = "Optional replayed artifact image path")]
+    pub artifact: Option<String>,
+    #[arg(long, help = "Optional expected artifact SHA-256 digest")]
+    pub artifact_sha256: Option<String>,
+    #[arg(long, help = "Optional Linux kernel git revision")]
+    pub kernel_git: Option<String>,
+    #[arg(long, default_value = "0", help = "Observed QEMU exit code")]
+    pub qemu_exit_code: i32,
+    #[arg(long, help = "Output kernel replay JSON report path")]
+    pub output: String,
 }
 
 #[derive(Parser, Debug)]

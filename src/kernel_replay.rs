@@ -1,4 +1,11 @@
+use crate::cli::KernelReportArgs;
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::fs;
+use std::fs::File;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
 pub const KERNEL_REPLAY_REPORT_SCHEMA: &str = "erofs-rs.kernel-replay.v1";
 
@@ -49,6 +56,91 @@ pub fn build_kernel_replay_report(
         signature: verdict.signature,
         dangerous_pattern: verdict.dangerous_pattern,
     }
+}
+
+fn sha256_file(path: &Path) -> Result<String> {
+    let mut file =
+        File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .with_context(|| format!("failed to hash {}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn is_sha256_digest(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn resolve_artifact_sha256(args: &KernelReportArgs) -> Result<Option<String>> {
+    let expected = args.artifact_sha256.as_deref();
+    if let Some(digest) = expected {
+        if !is_sha256_digest(digest) {
+            bail!("invalid artifact SHA-256 digest: {digest}");
+        }
+    }
+
+    let Some(path) = &args.artifact else {
+        return Ok(expected.map(ToOwned::to_owned));
+    };
+    let artifact_path = PathBuf::from(path);
+    if !artifact_path.exists() {
+        bail!("artifact file not found: {}", artifact_path.display());
+    }
+
+    let actual = sha256_file(&artifact_path)?;
+    if let Some(expected) = expected {
+        if actual != expected {
+            bail!(
+                "artifact SHA-256 mismatch for {}: expected {}, got {}",
+                artifact_path.display(),
+                expected,
+                actual
+            );
+        }
+    }
+    Ok(Some(actual))
+}
+
+fn write_report(path: &Path, report: &KernelReplayReport) -> Result<()> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let json =
+        serde_json::to_string_pretty(report).context("failed to serialize kernel replay report")?;
+    fs::write(path, format!("{json}\n"))
+        .with_context(|| format!("failed to write kernel replay report {}", path.display()))
+}
+
+pub fn run(args: &KernelReportArgs) -> Result<()> {
+    let dmesg_path = Path::new(&args.dmesg);
+    let dmesg = fs::read_to_string(dmesg_path)
+        .with_context(|| format!("failed to read dmesg log {}", dmesg_path.display()))?;
+    let artifact_sha256 = resolve_artifact_sha256(args)?;
+    let report = build_kernel_replay_report(
+        &dmesg,
+        args.qemu_exit_code,
+        artifact_sha256,
+        args.kernel_git.clone(),
+    );
+    let output_path = Path::new(&args.output);
+    write_report(output_path, &report)?;
+
+    println!("Wrote kernel replay report to {}", output_path.display());
+    println!("  Outcome: {:?}", report.outcome);
+    println!("  Signature: {}", report.signature);
+    Ok(())
 }
 
 pub fn classify_dmesg_text(dmesg: &str, qemu_exit_code: i32) -> KernelReplayVerdict {
@@ -167,8 +259,11 @@ fn normalize_signature_detail(detail: &str) -> String {
 mod tests {
     use super::{
         KERNEL_REPLAY_REPORT_SCHEMA, KernelReplayOutcome, build_kernel_replay_report,
-        classify_dmesg_text,
+        classify_dmesg_text, run,
     };
+    use crate::cli::KernelReportArgs;
+    use sha2::{Digest, Sha256};
+    use std::fs;
 
     #[test]
     fn dmesg_classification_prioritizes_unsafe_output() {
@@ -238,5 +333,68 @@ mod tests {
         assert_eq!(decoded, report);
         assert_eq!(decoded.schema, KERNEL_REPLAY_REPORT_SCHEMA);
         assert_eq!(decoded.outcome, KernelReplayOutcome::Accepted);
+    }
+
+    #[test]
+    fn kernel_report_command_writes_classified_json() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let dmesg = tempdir.path().join("qemu-dmesg.log");
+        let artifact = tempdir.path().join("artifact.erofs");
+        let output = tempdir.path().join("reports").join("kernel-report.json");
+        fs::write(
+            &dmesg,
+            "[ 1.0] erofs (device vda): failed to verify superblock checksum\n\
+== erofs mount rejected safely ==\n",
+        )
+        .unwrap();
+        fs::write(&artifact, b"artifact bytes").unwrap();
+        let artifact_sha256 = hex::encode(Sha256::digest(b"artifact bytes"));
+        let args = KernelReportArgs {
+            dmesg: dmesg.to_string_lossy().into_owned(),
+            artifact: Some(artifact.to_string_lossy().into_owned()),
+            artifact_sha256: Some(artifact_sha256.clone()),
+            kernel_git: Some("linux-test-rev".to_string()),
+            qemu_exit_code: 0,
+            output: output.to_string_lossy().into_owned(),
+        };
+
+        run(&args).unwrap();
+
+        let json = fs::read_to_string(output).unwrap();
+        let report: super::KernelReplayReport = serde_json::from_str(&json).unwrap();
+        assert_eq!(report.schema, KERNEL_REPLAY_REPORT_SCHEMA);
+        assert_eq!(
+            report.artifact_sha256.as_deref(),
+            Some(artifact_sha256.as_str())
+        );
+        assert_eq!(report.kernel_git.as_deref(), Some("linux-test-rev"));
+        assert_eq!(report.outcome, KernelReplayOutcome::Rejected);
+        assert_eq!(
+            report.signature,
+            "kernel_rejected: failed to verify superblock checksum"
+        );
+    }
+
+    #[test]
+    fn kernel_report_command_rejects_artifact_hash_mismatch() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let dmesg = tempdir.path().join("qemu-dmesg.log");
+        let artifact = tempdir.path().join("artifact.erofs");
+        let output = tempdir.path().join("kernel-report.json");
+        fs::write(&dmesg, "== erofs traversal complete ==\n").unwrap();
+        fs::write(&artifact, b"artifact bytes").unwrap();
+        let args = KernelReportArgs {
+            dmesg: dmesg.to_string_lossy().into_owned(),
+            artifact: Some(artifact.to_string_lossy().into_owned()),
+            artifact_sha256: Some("0".repeat(64)),
+            kernel_git: None,
+            qemu_exit_code: 0,
+            output: output.to_string_lossy().into_owned(),
+        };
+
+        let error = run(&args).unwrap_err();
+
+        assert!(error.to_string().contains("artifact SHA-256 mismatch"));
+        assert!(!output.exists());
     }
 }

@@ -100,6 +100,25 @@ Campaign-level files:
 Use `erofs-rs triage` to merge multiple `fuzz-buckets.json` files into an
 `erofs-rs.bucket-db.v1` bucket database.
 
+## Kernel Replay Report
+
+Kernel replay reports use the `erofs-rs.kernel-replay.v1` schema. Generate one
+from a captured QEMU dmesg or console log with:
+
+```bash
+erofs-rs kernel-report \
+    --dmesg build/qemu-dmesg.log \
+    --qemu-exit-code 0 \
+    --artifact build/mutated.erofs \
+    --output build/kernel-replay.json
+```
+
+The report records the artifact SHA-256 when an artifact is supplied, the
+kernel revision when `--kernel-git` is supplied, the QEMU exit code, a kernel
+outcome, a normalized signature, and the dangerous pattern that triggered an
+unsafe verdict. Passing `--artifact-sha256` verifies that the replayed artifact
+matches the expected digest before writing the report.
+
 ## Finding Bundle Manifest
 
 A portable finding bundle should include:

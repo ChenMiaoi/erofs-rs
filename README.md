@@ -402,6 +402,25 @@ make smoke
 make smoke-malformed MALFORMED_IMG=build/mutated.erofs
 ```
 
+### Kernel replay reports
+
+```bash
+erofs-rs kernel-report \
+    --dmesg build/qemu-dmesg.log \
+    --qemu-exit-code 0 \
+    --artifact build/mutated.erofs \
+    --kernel-git "$(git -C vendor/linux rev-parse HEAD)" \
+    --output build/kernel-replay.json
+```
+
+`kernel-report` converts a captured QEMU dmesg or console log into the stable
+`erofs-rs.kernel-replay.v1` JSON schema. The classifier treats BUG/Oops,
+panic, KASAN, KMSAN, KFENCE, UBSAN, lockdep, hung tasks, RCU stalls, and other
+dangerous kernel diagnostics as unsafe results before considering clean
+rejection or successful traversal markers. Passing `--artifact` records the
+image SHA-256 in the report, and `--artifact-sha256` makes the command fail if
+the replayed artifact no longer matches the expected digest.
+
 ## Continuous Integration
 
 CI is split by cost and feedback speed:
@@ -432,10 +451,9 @@ separately from unsafe tool behavior.
 
 Kernel replay is intentionally **not** run in CI because building the kernel is
 too heavy for the default GitHub Actions runner. Use the local `Makefile` for
-QEMU-based kernel testing. The Rust library includes the
-`erofs-rs.kernel-replay.v1` report schema and dmesg classifier used to keep
-future QEMU replay reports aligned with the existing unsafe-kernel-output
-policy.
+QEMU-based kernel testing. `erofs-rs kernel-report` turns captured QEMU logs
+into `erofs-rs.kernel-replay.v1` reports so local and scheduled replay jobs can
+share the same unsafe-kernel-output policy.
 
 Issue and pull request templates require reproducible commands, fuzz seeds or
 artifacts when relevant, observed output, test coverage, and DCO-style
