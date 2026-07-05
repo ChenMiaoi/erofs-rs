@@ -280,6 +280,7 @@ erofs-rs bundle \
     --replay-report /tmp/replay-report.txt \
     --oracle-report /tmp/oracle-report.json \
     --output /tmp/fuzz-artifacts/bundle.json
+erofs-rs bundle-check --manifest /tmp/fuzz-artifacts/bundle.json
 ```
 
 Triage bundles should keep the image, fuzz sidecar, captured stdout/stderr, and
@@ -297,6 +298,10 @@ on the command line. JSON replay, oracle, and kernel reports are parsed with
 their stable schemas before they enter the bundle. JSON replay, oracle, and
 kernel reports must match the bundled artifact SHA-256; legacy text reports
 remain opaque attachments.
+`bundle-check` consumes an existing `bundle.json`, resolves attachments
+relative to the manifest location, verifies recorded SHA-256 digests and
+artifact size, revalidates the sidecar, and rechecks JSON replay, oracle, and
+kernel reports against the bundled artifact digest.
 
 ### Coverage-guided fuzz targets
 

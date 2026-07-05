@@ -1,7 +1,7 @@
-use crate::cli::BundleArgs;
+use crate::cli::{BundleArgs, BundleCheckArgs};
 use crate::finding_bundle::{
     BundleArtifact, BundleFileRef, FINDING_BUNDLE_SCHEMA, FindingBundleManifest,
-    validate_finding_bundle_manifest,
+    parse_finding_bundle_manifest, validate_finding_bundle_manifest,
 };
 use crate::fuzz::{FuzzArtifactSidecar, parse_fuzz_artifact_sidecar};
 use crate::kernel_replay::parse_kernel_replay_report;
@@ -176,6 +176,19 @@ fn validate_report_sha256(
     Ok(())
 }
 
+fn validate_file_sha256(field: &str, path: &Path, expected_sha256: &str) -> Result<()> {
+    let actual_sha256 = sha256_file(path)?;
+    if actual_sha256 != expected_sha256 {
+        bail!(
+            "{field} SHA-256 mismatch for {}: expected={}, actual={}",
+            path.display(),
+            expected_sha256,
+            actual_sha256
+        );
+    }
+    Ok(())
+}
+
 fn portable_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
@@ -194,6 +207,41 @@ fn file_ref(output_path: &Path, path: &Path) -> Result<BundleFileRef> {
 
 fn optional_file_ref(output_path: &Path, path: Option<&PathBuf>) -> Result<Option<BundleFileRef>> {
     path.map(|path| file_ref(output_path, path)).transpose()
+}
+
+fn resolve_bundle_path(manifest_path: &Path, recorded_path: &str, field: &str) -> Result<PathBuf> {
+    let recorded = PathBuf::from(recorded_path);
+    let path = if recorded.is_absolute() {
+        recorded
+    } else {
+        manifest_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(recorded)
+    };
+    require_existing(path, field)
+}
+
+fn resolve_bundle_file_ref(
+    manifest_path: &Path,
+    field: &str,
+    file_ref: &BundleFileRef,
+) -> Result<PathBuf> {
+    let path = resolve_bundle_path(manifest_path, &file_ref.path, field)?;
+    if let Some(expected_sha256) = &file_ref.sha256 {
+        validate_file_sha256(field, &path, expected_sha256)?;
+    }
+    Ok(path)
+}
+
+fn resolve_optional_bundle_file_ref(
+    manifest_path: &Path,
+    field: &str,
+    file_ref: Option<&BundleFileRef>,
+) -> Result<Option<PathBuf>> {
+    file_ref
+        .map(|file_ref| resolve_bundle_file_ref(manifest_path, field, file_ref))
+        .transpose()
 }
 
 fn build_manifest(args: &BundleArgs) -> Result<FindingBundleManifest> {
@@ -296,10 +344,85 @@ pub fn run(args: &BundleArgs) -> Result<()> {
     Ok(())
 }
 
+pub fn check(args: &BundleCheckArgs) -> Result<()> {
+    let manifest_path = Path::new(&args.manifest);
+    let content = fs::read_to_string(manifest_path)
+        .with_context(|| format!("failed to read finding bundle {}", manifest_path.display()))?;
+    let manifest = parse_finding_bundle_manifest(&content)
+        .with_context(|| format!("failed to parse finding bundle {}", manifest_path.display()))?;
+
+    let artifact_path = resolve_bundle_path(manifest_path, &manifest.artifact.path, "artifact")?;
+    validate_file_sha256("artifact", &artifact_path, &manifest.artifact.sha256)?;
+    if let Some(expected_size) = manifest.artifact.size_bytes {
+        let actual_size = fs::metadata(&artifact_path)
+            .with_context(|| format!("failed to stat artifact {}", artifact_path.display()))?
+            .len();
+        if actual_size != expected_size {
+            bail!(
+                "artifact size mismatch for {}: expected={}, actual={}",
+                artifact_path.display(),
+                expected_size,
+                actual_size
+            );
+        }
+    }
+
+    let sidecar_path = resolve_bundle_file_ref(manifest_path, "sidecar", &manifest.sidecar)?;
+    let sidecar = read_sidecar(&sidecar_path)?;
+    if sidecar.artifact_sha256 != manifest.artifact.sha256 {
+        bail!(
+            "sidecar artifact SHA-256 mismatch for {}: bundle={}, sidecar={}",
+            sidecar_path.display(),
+            manifest.artifact.sha256,
+            sidecar.artifact_sha256
+        );
+    }
+
+    resolve_optional_bundle_file_ref(manifest_path, "stdout", manifest.stdout.as_ref())?;
+    resolve_optional_bundle_file_ref(manifest_path, "stderr", manifest.stderr.as_ref())?;
+    let replay_report = resolve_optional_bundle_file_ref(
+        manifest_path,
+        "replay_report",
+        manifest.replay_report.as_ref(),
+    )?;
+    let oracle_report = resolve_optional_bundle_file_ref(
+        manifest_path,
+        "oracle_report",
+        manifest.oracle_report.as_ref(),
+    )?;
+    let kernel_report = resolve_optional_bundle_file_ref(
+        manifest_path,
+        "kernel_report",
+        manifest.kernel_report.as_ref(),
+    )?;
+
+    validate_optional_json_report(
+        replay_report.as_ref(),
+        OptionalReportKind::Replay,
+        &manifest.artifact.sha256,
+    )?;
+    validate_optional_json_report(
+        oracle_report.as_ref(),
+        OptionalReportKind::Oracle,
+        &manifest.artifact.sha256,
+    )?;
+    validate_optional_json_report(
+        kernel_report.as_ref(),
+        OptionalReportKind::Kernel,
+        &manifest.artifact.sha256,
+    )?;
+
+    println!("Finding bundle OK: {}", manifest_path.display());
+    println!("  Artifact: {}", manifest.artifact.path);
+    println!("  Classification: {}", manifest.classification);
+    println!("  Signature: {}", manifest.signature);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{build_manifest, sha256_file};
-    use crate::cli::BundleArgs;
+    use super::{build_manifest, check, sha256_file};
+    use crate::cli::{BundleArgs, BundleCheckArgs};
     use crate::finding_bundle::FindingBundleManifest;
     use std::fs;
     use std::path::Path;
@@ -849,5 +972,90 @@ mod tests {
             manifest.replay_report.as_ref().unwrap().path,
             "replay-report.txt"
         );
+    }
+
+    #[test]
+    fn bundle_check_validates_written_bundle_attachments() {
+        let tmp = TempDir::new().unwrap();
+        let artifact = tmp.path().join("fuzz_seed_iter1.erofs");
+        let sidecar = tmp.path().join("fuzz_seed_iter1.json");
+        let stdout = tmp.path().join("fuzz_seed_iter1.stdout.txt");
+        let stderr = tmp.path().join("fuzz_seed_iter1.stderr.txt");
+        let replay_report = tmp.path().join("replay-report.json");
+        let output = tmp.path().join("bundle.json");
+        fs::write(&artifact, b"image").unwrap();
+        fs::write(&stdout, b"stdout").unwrap();
+        fs::write(&stderr, b"stderr").unwrap();
+        let artifact_sha256 = sha256_file(&artifact).unwrap();
+        write_sidecar_fixture(
+            &sidecar,
+            &artifact,
+            &stdout,
+            &stderr,
+            &artifact_sha256,
+            "accepted_with_errors",
+            "accepted_with_errors: fsck printed errors",
+        );
+        write_replay_report_fixture(&replay_report, &sidecar, &artifact, &artifact_sha256);
+
+        let args = BundleArgs {
+            sidecar: sidecar.to_string_lossy().to_string(),
+            artifact: None,
+            stdout: None,
+            stderr: None,
+            replay_report: Some(replay_report.to_string_lossy().to_string()),
+            oracle_report: None,
+            kernel_report: None,
+            output: output.to_string_lossy().to_string(),
+        };
+        super::run(&args).unwrap();
+
+        let check_args = BundleCheckArgs {
+            manifest: output.to_string_lossy().to_string(),
+        };
+        check(&check_args).unwrap();
+    }
+
+    #[test]
+    fn bundle_check_rejects_attachment_hash_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let artifact = tmp.path().join("fuzz_seed_iter1.erofs");
+        let sidecar = tmp.path().join("fuzz_seed_iter1.json");
+        let stdout = tmp.path().join("fuzz_seed_iter1.stdout.txt");
+        let stderr = tmp.path().join("fuzz_seed_iter1.stderr.txt");
+        let output = tmp.path().join("bundle.json");
+        fs::write(&artifact, b"image").unwrap();
+        fs::write(&stdout, b"stdout").unwrap();
+        fs::write(&stderr, b"stderr").unwrap();
+        let artifact_sha256 = sha256_file(&artifact).unwrap();
+        write_sidecar_fixture(
+            &sidecar,
+            &artifact,
+            &stdout,
+            &stderr,
+            &artifact_sha256,
+            "rejected_crash",
+            "rejected_crash: SIGSEGV",
+        );
+
+        let args = BundleArgs {
+            sidecar: sidecar.to_string_lossy().to_string(),
+            artifact: None,
+            stdout: None,
+            stderr: None,
+            replay_report: None,
+            oracle_report: None,
+            kernel_report: None,
+            output: output.to_string_lossy().to_string(),
+        };
+        super::run(&args).unwrap();
+        fs::write(&stdout, b"changed").unwrap();
+
+        let check_args = BundleCheckArgs {
+            manifest: output.to_string_lossy().to_string(),
+        };
+        let error = check(&check_args).unwrap_err();
+
+        assert!(error.to_string().contains("stdout SHA-256 mismatch"));
     }
 }

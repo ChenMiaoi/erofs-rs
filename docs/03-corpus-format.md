@@ -285,6 +285,10 @@ opaque attachments. JSON replay, oracle, and kernel reports must match the
 bundled artifact SHA-256. Manifest parsing rejects non-actionable
 classifications, signatures that do not match the classification prefix, and
 duplicate paths so each bundle role points at a distinct attachment.
+Use `erofs-rs bundle-check --manifest bundle.json` after moving or unpacking a
+bundle. It resolves relative paths from the manifest location, verifies file
+digests and artifact size, reparses the sidecar, and revalidates JSON replay,
+oracle, and kernel reports against the bundled artifact SHA-256.
 
 Replay JSON reports use the `erofs-rs.replay-report.v1` schema. Generate one
 with `erofs-rs replay --sidecar <fuzz_*.json> --json-report replay-report.json`

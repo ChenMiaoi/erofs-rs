@@ -17,6 +17,7 @@ fn main() -> Result<()> {
         Commands::Fuzz(args) => fuzz::run(args),
         Commands::Replay(args) => replay::run(args),
         Commands::Bundle(args) => bundle::run(args),
+        Commands::BundleCheck(args) => bundle::check(args),
         Commands::Triage(args) => triage::run(args),
         Commands::Oracle(args) => oracle::run(args),
         Commands::KernelReport(args) => kernel_replay::run(args),

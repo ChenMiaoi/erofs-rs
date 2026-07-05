@@ -24,6 +24,8 @@ pub enum Commands {
     Replay(ReplayArgs),
     /// Create a portable fuzz finding bundle manifest.
     Bundle(BundleArgs),
+    /// Validate a portable fuzz finding bundle manifest and attachments.
+    BundleCheck(BundleCheckArgs),
     /// Merge fuzz campaign triage reports.
     Triage(TriageArgs),
     /// Run userspace oracle checks over one image.
@@ -260,6 +262,12 @@ pub struct BundleArgs {
     pub kernel_report: Option<String>,
     #[arg(long, help = "Output bundle.json manifest path")]
     pub output: String,
+}
+
+#[derive(Parser, Debug)]
+pub struct BundleCheckArgs {
+    #[arg(long, help = "Finding bundle JSON manifest path")]
+    pub manifest: String,
 }
 
 #[derive(Parser, Debug)]
