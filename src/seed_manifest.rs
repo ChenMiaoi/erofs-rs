@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::collections::HashSet;
 use thiserror::Error;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -46,6 +47,18 @@ pub enum SeedManifestError {
         feature_index: usize,
         feature: String,
     },
+    #[error("seed matrix entry {index} duplicates {field}: {value}")]
+    DuplicateField {
+        index: usize,
+        field: &'static str,
+        value: String,
+    },
+    #[error("seed matrix entry {index} duplicates feature tag at index {feature_index}: {feature}")]
+    DuplicateFeature {
+        index: usize,
+        feature_index: usize,
+        feature: String,
+    },
 }
 
 pub fn parse_seed_matrix_manifest(
@@ -61,12 +74,17 @@ pub fn validate_seed_matrix_manifest(entries: &[SeedMatrixEntry]) -> Result<(), 
         return Err(SeedManifestError::EmptyManifest);
     }
 
+    let mut seeds = HashSet::new();
+    let mut paths = HashSet::new();
+    let mut hashes = HashSet::new();
     for (index, entry) in entries.iter().enumerate() {
         require_nonempty(index, "seed", &entry.seed)?;
         require_nonempty(index, "path", &entry.path)?;
         require_nonempty(index, "source_profile", &entry.source_profile)?;
         require_nonempty(index, "mkfs", &entry.mkfs)?;
         require_nonempty(index, "mkfs_version", &entry.mkfs_version)?;
+        require_unique(index, "seed", &entry.seed, &mut seeds)?;
+        require_unique(index, "path", &entry.path, &mut paths)?;
 
         if !is_sha256_digest(&entry.sha256) {
             return Err(SeedManifestError::InvalidSha256 {
@@ -74,10 +92,12 @@ pub fn validate_seed_matrix_manifest(entries: &[SeedMatrixEntry]) -> Result<(), 
                 sha256: entry.sha256.clone(),
             });
         }
+        require_unique(index, "sha256", &entry.sha256, &mut hashes)?;
 
         if entry.features.is_empty() {
             return Err(SeedManifestError::EmptyFeatures { index });
         }
+        let mut features = HashSet::new();
         for (feature_index, feature) in entry.features.iter().enumerate() {
             if feature.is_empty() {
                 return Err(SeedManifestError::EmptyFeature {
@@ -87,6 +107,13 @@ pub fn validate_seed_matrix_manifest(entries: &[SeedMatrixEntry]) -> Result<(), 
             }
             if !is_feature_tag(feature) {
                 return Err(SeedManifestError::InvalidFeature {
+                    index,
+                    feature_index,
+                    feature: feature.clone(),
+                });
+            }
+            if !features.insert(feature.as_str()) {
+                return Err(SeedManifestError::DuplicateFeature {
                     index,
                     feature_index,
                     feature: feature.clone(),
@@ -105,6 +132,22 @@ fn require_nonempty(
 ) -> Result<(), SeedManifestError> {
     if value.is_empty() {
         return Err(SeedManifestError::EmptyField { index, field });
+    }
+    Ok(())
+}
+
+fn require_unique<'a>(
+    index: usize,
+    field: &'static str,
+    value: &'a str,
+    seen: &mut HashSet<&'a str>,
+) -> Result<(), SeedManifestError> {
+    if !seen.insert(value) {
+        return Err(SeedManifestError::DuplicateField {
+            index,
+            field,
+            value: value.to_string(),
+        });
     }
     Ok(())
 }
@@ -242,6 +285,46 @@ mod tests {
                 feature_index: 0,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn seed_matrix_manifest_rejects_duplicate_seed() {
+        let mut manifest: serde_json::Value = serde_json::from_str(VALID_MANIFEST).unwrap();
+        let entry = manifest[0].clone();
+        manifest.as_array_mut().unwrap().push(entry);
+        let manifest = serde_json::to_string(&manifest).unwrap();
+
+        let error = parse_seed_matrix_manifest(&manifest).unwrap_err();
+
+        assert!(matches!(
+            error,
+            SeedManifestError::DuplicateField {
+                index: 1,
+                field: "seed",
+                value,
+            } if value == "block-4096-plain.erofs"
+        ));
+    }
+
+    #[test]
+    fn seed_matrix_manifest_rejects_duplicate_feature_tag() {
+        let mut manifest: serde_json::Value = serde_json::from_str(VALID_MANIFEST).unwrap();
+        manifest[0]["features"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!("block_size:4096"));
+        let manifest = serde_json::to_string(&manifest).unwrap();
+
+        let error = parse_seed_matrix_manifest(&manifest).unwrap_err();
+
+        assert!(matches!(
+            error,
+            SeedManifestError::DuplicateFeature {
+                index: 0,
+                feature_index: 4,
+                feature,
+            } if feature == "block_size:4096"
         ));
     }
 }

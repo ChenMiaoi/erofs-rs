@@ -341,8 +341,9 @@ feature tags, and full SHA-256 for each seed. `required` entries are expected
 to build on ordinary CI hosts, while `best_effort` entries depend on host
 capabilities such as xattr, ACL, socket, or device-node support. Feature tags
 must use `namespace:value` form. The Rust test suite validates this manifest
-shape so campaign tooling can rely on the required fields, feature tag shape,
-and SHA-256 width.
+shape so campaign tooling can rely on the required fields, unique seed paths
+and digests, feature tag shape, per-entry feature uniqueness, and SHA-256
+width.
 
 ### `oracle` – userspace differential checks
 
