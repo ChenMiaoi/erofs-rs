@@ -1,3 +1,4 @@
+use crate::fuzz::OutcomeKind;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use thiserror::Error;
@@ -46,6 +47,13 @@ pub enum FindingBundleError {
     InvalidSha256 { field: &'static str, sha256: String },
     #[error("finding bundle manifest contains duplicate path: {0}")]
     DuplicatePath(String),
+    #[error("finding bundle classification {classification} is not actionable")]
+    NonActionableClassification { classification: String },
+    #[error("finding bundle signature {signature} does not match classification {classification}")]
+    SignatureClassificationMismatch {
+        classification: String,
+        signature: String,
+    },
 }
 
 pub fn parse_finding_bundle_manifest(
@@ -75,6 +83,27 @@ pub fn validate_finding_bundle_manifest(
     validate_unique_paths(manifest)?;
     require_nonempty("classification", &manifest.classification)?;
     require_nonempty("signature", &manifest.signature)?;
+    validate_finding_identity(&manifest.classification, &manifest.signature)?;
+    Ok(())
+}
+
+fn validate_finding_identity(
+    classification: &str,
+    signature: &str,
+) -> Result<(), FindingBundleError> {
+    if !OutcomeKind::from_classification(classification).is_finding() {
+        return Err(FindingBundleError::NonActionableClassification {
+            classification: classification.to_string(),
+        });
+    }
+
+    let signature_prefix = format!("{classification}: ");
+    if signature != classification && !signature.starts_with(&signature_prefix) {
+        return Err(FindingBundleError::SignatureClassificationMismatch {
+            classification: classification.to_string(),
+            signature: signature.to_string(),
+        });
+    }
     Ok(())
 }
 
@@ -269,6 +298,46 @@ mod tests {
             error,
             FindingBundleError::DuplicatePath(path)
                 if path == "fuzz_seed_iter42.stdout.txt"
+        ));
+    }
+
+    #[test]
+    fn finding_bundle_manifest_rejects_non_actionable_classification() {
+        let manifest = VALID_MANIFEST
+            .replace(
+                r#""classification": "rejected_crash""#,
+                r#""classification": "accepted""#,
+            )
+            .replace(
+                r#""signature": "rejected_crash: SIGSEGV""#,
+                r#""signature": "accepted: fsck accepted the image""#,
+            );
+
+        let error = parse_finding_bundle_manifest(&manifest).unwrap_err();
+
+        assert!(matches!(
+            error,
+            FindingBundleError::NonActionableClassification { classification }
+                if classification == "accepted"
+        ));
+    }
+
+    #[test]
+    fn finding_bundle_manifest_rejects_signature_mismatch() {
+        let manifest = VALID_MANIFEST.replace(
+            r#""signature": "rejected_crash: SIGSEGV""#,
+            r#""signature": "sanitizer_crash: AddressSanitizer""#,
+        );
+
+        let error = parse_finding_bundle_manifest(&manifest).unwrap_err();
+
+        assert!(matches!(
+            error,
+            FindingBundleError::SignatureClassificationMismatch {
+                classification,
+                signature,
+            } if classification == "rejected_crash"
+                && signature == "sanitizer_crash: AddressSanitizer"
         ));
     }
 }

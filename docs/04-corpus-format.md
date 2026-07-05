@@ -240,8 +240,9 @@ bundle.json` to create the manifest from validated sidecar metadata; pass
 reports. The command verifies the artifact digest against the sidecar before
 writing the manifest. JSON replay, oracle, and kernel reports are parsed with
 their stable schemas before they enter the bundle; legacy text reports remain
-opaque attachments. Manifest parsing rejects duplicate paths so each bundle
-role points at a distinct attachment.
+opaque attachments. Manifest parsing rejects non-actionable classifications,
+signatures that do not match the classification prefix, and duplicate paths so
+each bundle role points at a distinct attachment.
 
 Replay JSON reports use the `erofs-rs.replay-report.v1` schema. Generate one
 with `erofs-rs replay --sidecar <fuzz_*.json> --json-report replay-report.json`

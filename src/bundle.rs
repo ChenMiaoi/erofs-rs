@@ -389,8 +389,8 @@ mod tests {
             &stdout,
             &stderr,
             &artifact_sha256,
-            "accepted",
-            "accepted: fsck accepted the image",
+            "accepted_with_errors",
+            "accepted_with_errors: fsck printed errors",
         );
         fs::write(
             &replay_report,
@@ -405,14 +405,14 @@ mod tests {
                 "strategy": "mutation",
                 "seed_name": "seed.erofs",
                 "original": {
-                    "classification": "accepted",
+                    "classification": "accepted_with_errors",
                     "reason": "fsck accepted the image",
                     "exit_code": 0,
                     "timed_out": false,
-                    "signature": "accepted: fsck accepted the image"
+                    "signature": "accepted_with_errors: fsck printed errors"
                 },
                 "replay": {
-                    "classification": "accepted",
+                    "classification": "accepted_with_errors",
                     "reason": "fsck accepted the image",
                     "exit_code": 0,
                     "signal": null,
@@ -470,8 +470,8 @@ mod tests {
             &stdout,
             &stderr,
             &artifact_sha256,
-            "accepted",
-            "accepted: fsck accepted the image",
+            "accepted_with_errors",
+            "accepted_with_errors: fsck printed errors",
         );
         fs::write(&oracle_report, r#"{"schema":"erofs-rs.oracle-report.v0"}"#).unwrap();
 
@@ -510,8 +510,8 @@ mod tests {
             &stdout,
             &stderr,
             &artifact_sha256,
-            "accepted",
-            "accepted: fsck accepted the image",
+            "accepted_with_errors",
+            "accepted_with_errors: fsck printed errors",
         );
 
         let args = BundleArgs {
