@@ -235,10 +235,11 @@ and representative examples from each campaign. Inputs with unknown schemas,
 duplicate signatures within one report, zero counts, or conflicting
 classification/outcome metadata are rejected instead of merged silently.
 Bucket reports are parsed as the exact `erofs-rs.fuzz-buckets.v1` schema, so
-unknown fields and mismatched actionable finding counts are rejected too. The
-Rust library parser also rejects unknown bucket database schemas, duplicate
-source reports or signatures, examples that reference unknown source reports,
-and inconsistent per-source bucket counts.
+unknown fields, invalid or mismatched outcome kinds, non-actionable buckets,
+and mismatched actionable finding counts are rejected too. The Rust library
+parser also rejects unknown bucket database schemas, duplicate source reports
+or signatures, examples that reference unknown source reports, inconsistent
+outcome metadata, and inconsistent per-source bucket counts.
 
 ### `replay` – sidecar-based reproduction
 

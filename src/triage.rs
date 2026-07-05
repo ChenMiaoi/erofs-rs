@@ -1,4 +1,5 @@
 use crate::cli::TriageArgs;
+use crate::fuzz::OutcomeKind;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::btree_map::Entry;
@@ -97,6 +98,21 @@ pub enum BucketDatabaseError {
     DuplicateSource(String),
     #[error("bucket database contains duplicate signature: {0}")]
     DuplicateSignature(String),
+    #[error("bucket database field {field} has invalid outcome kind: {outcome_kind}")]
+    InvalidOutcomeKind {
+        field: &'static str,
+        outcome_kind: String,
+    },
+    #[error(
+        "bucket database classification {classification} has outcome kind {outcome_kind}, expected {expected}"
+    )]
+    OutcomeKindMismatch {
+        classification: String,
+        outcome_kind: String,
+        expected: String,
+    },
+    #[error("bucket database classification {classification} is not actionable")]
+    NonActionableOutcome { classification: String },
     #[error("bucket database signature contains duplicate example source: {0}")]
     DuplicateExampleSource(String),
     #[error("bucket database example references unknown source report: {0}")]
@@ -121,6 +137,21 @@ pub enum FuzzBucketReportError {
     ZeroCount(String),
     #[error("fuzz bucket report contains duplicate signature: {0}")]
     DuplicateSignature(String),
+    #[error("fuzz bucket report field {field} has invalid outcome kind: {outcome_kind}")]
+    InvalidOutcomeKind {
+        field: &'static str,
+        outcome_kind: String,
+    },
+    #[error(
+        "fuzz bucket report classification {classification} has outcome kind {outcome_kind}, expected {expected}"
+    )]
+    OutcomeKindMismatch {
+        classification: String,
+        outcome_kind: String,
+        expected: String,
+    },
+    #[error("fuzz bucket report classification {classification} is not actionable")]
+    NonActionableOutcome { classification: String },
     #[error("fuzz bucket report count mismatch for {field}: expected {expected}, actual {actual}")]
     CountMismatch {
         field: &'static str,
@@ -178,12 +209,51 @@ fn validate_fuzz_bucket(bucket: &FuzzBucket) -> std::result::Result<(), FuzzBuck
     require_bucket_report_nonempty("buckets.signature", &bucket.signature)?;
     require_bucket_report_nonempty("buckets.classification", &bucket.classification)?;
     require_bucket_report_nonempty("buckets.outcome_kind", &bucket.outcome_kind)?;
+    validate_fuzz_bucket_outcome_kind(&bucket.classification, &bucket.outcome_kind)?;
     require_bucket_report_nonempty("buckets.example_seed_name", &bucket.example_seed_name)?;
     require_bucket_report_nonempty("buckets.reason", &bucket.reason)?;
     if bucket.count == 0 {
         return Err(FuzzBucketReportError::ZeroCount(bucket.signature.clone()));
     }
     Ok(())
+}
+
+fn validate_fuzz_bucket_outcome_kind(
+    classification: &str,
+    outcome_kind: &str,
+) -> std::result::Result<(), FuzzBucketReportError> {
+    if !is_known_outcome_kind(outcome_kind) {
+        return Err(FuzzBucketReportError::InvalidOutcomeKind {
+            field: "buckets.outcome_kind",
+            outcome_kind: outcome_kind.to_string(),
+        });
+    }
+    let expected = OutcomeKind::from_classification(classification);
+    if outcome_kind != expected.label() {
+        return Err(FuzzBucketReportError::OutcomeKindMismatch {
+            classification: classification.to_string(),
+            outcome_kind: outcome_kind.to_string(),
+            expected: expected.label().to_string(),
+        });
+    }
+    if !expected.is_finding() {
+        return Err(FuzzBucketReportError::NonActionableOutcome {
+            classification: classification.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn is_known_outcome_kind(outcome_kind: &str) -> bool {
+    matches!(
+        outcome_kind,
+        "normal_accept"
+            | "expected_reject"
+            | "interesting_semantic"
+            | "unsafe_crash"
+            | "unsafe_timeout"
+            | "tooling_error"
+    )
 }
 
 fn require_bucket_report_nonempty(
@@ -270,6 +340,7 @@ fn validate_bucket_database_entry<'a>(
     require_database_nonempty("buckets.signature", &bucket.signature)?;
     require_database_nonempty("buckets.classification", &bucket.classification)?;
     require_database_nonempty("buckets.outcome_kind", &bucket.outcome_kind)?;
+    validate_database_outcome_kind(&bucket.classification, &bucket.outcome_kind)?;
     if bucket.total_count == 0 {
         return Err(BucketDatabaseError::CountMismatch {
             field: "buckets.total_count",
@@ -328,6 +399,32 @@ fn validate_bucket_database_entry<'a>(
             })?;
     }
 
+    Ok(())
+}
+
+fn validate_database_outcome_kind(
+    classification: &str,
+    outcome_kind: &str,
+) -> std::result::Result<(), BucketDatabaseError> {
+    if !is_known_outcome_kind(outcome_kind) {
+        return Err(BucketDatabaseError::InvalidOutcomeKind {
+            field: "buckets.outcome_kind",
+            outcome_kind: outcome_kind.to_string(),
+        });
+    }
+    let expected = OutcomeKind::from_classification(classification);
+    if outcome_kind != expected.label() {
+        return Err(BucketDatabaseError::OutcomeKindMismatch {
+            classification: classification.to_string(),
+            outcome_kind: outcome_kind.to_string(),
+            expected: expected.label().to_string(),
+        });
+    }
+    if !expected.is_finding() {
+        return Err(BucketDatabaseError::NonActionableOutcome {
+            classification: classification.to_string(),
+        });
+    }
     Ok(())
 }
 
@@ -521,12 +618,15 @@ mod tests {
         FuzzBucketReport, FuzzBucketReportError, build_bucket_database, parse_bucket_database,
         parse_fuzz_bucket_report, validate_bucket_database, validate_fuzz_bucket_report,
     };
+    use crate::fuzz::OutcomeKind;
 
     fn bucket(signature: &str, classification: &str, count: u64) -> FuzzBucket {
         FuzzBucket {
             signature: signature.to_string(),
             classification: classification.to_string(),
-            outcome_kind: "interesting_semantic".to_string(),
+            outcome_kind: OutcomeKind::from_classification(classification)
+                .label()
+                .to_string(),
             count,
             first_iteration: 7,
             example_seed_name: "seed".to_string(),
@@ -710,6 +810,70 @@ mod tests {
     }
 
     #[test]
+    fn fuzz_bucket_report_parser_rejects_unknown_outcome_kind() {
+        let mut report = fuzz_report(
+            11,
+            vec![bucket(
+                "accepted_with_errors: shared",
+                "accepted_with_errors",
+                1,
+            )],
+            "fuzz-report.txt".to_string(),
+        );
+        report.buckets[0].outcome_kind = "maybe_interesting".to_string();
+
+        let error = validate_fuzz_bucket_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            FuzzBucketReportError::InvalidOutcomeKind {
+                field: "buckets.outcome_kind",
+                outcome_kind,
+            } if outcome_kind == "maybe_interesting"
+        ));
+    }
+
+    #[test]
+    fn fuzz_bucket_report_parser_rejects_outcome_kind_mismatch() {
+        let mut report = fuzz_report(
+            11,
+            vec![bucket("rejected_crash: SIGSEGV", "rejected_crash", 1)],
+            "fuzz-report.txt".to_string(),
+        );
+        report.buckets[0].outcome_kind = "interesting_semantic".to_string();
+
+        let error = validate_fuzz_bucket_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            FuzzBucketReportError::OutcomeKindMismatch {
+                classification,
+                outcome_kind,
+                expected,
+            } if classification == "rejected_crash"
+                && outcome_kind == "interesting_semantic"
+                && expected == "unsafe_crash"
+        ));
+    }
+
+    #[test]
+    fn fuzz_bucket_report_parser_rejects_non_actionable_bucket() {
+        let report = fuzz_report(
+            11,
+            vec![bucket("rejected_invalid: bad inode", "rejected_invalid", 1)],
+            "fuzz-report.txt".to_string(),
+        );
+
+        let error = validate_fuzz_bucket_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            FuzzBucketReportError::NonActionableOutcome { classification }
+                if classification == "rejected_invalid"
+        ));
+    }
+
+    #[test]
     fn bucket_database_parser_accepts_generated_database() {
         let database = build_bucket_database(vec![report(
             "campaign/fuzz-buckets.json",
@@ -770,6 +934,80 @@ mod tests {
                 expected: 1,
                 actual: 2,
             }
+        ));
+    }
+
+    #[test]
+    fn bucket_database_parser_rejects_outcome_kind_mismatch() {
+        let mut database = build_bucket_database(vec![report(
+            "campaign/fuzz-buckets.json",
+            11,
+            vec![bucket("rejected_crash: SIGSEGV", "rejected_crash", 1)],
+        )])
+        .unwrap();
+        database.buckets[0].outcome_kind = "interesting_semantic".to_string();
+
+        let error = validate_bucket_database(&database).unwrap_err();
+
+        assert!(matches!(
+            error,
+            BucketDatabaseError::OutcomeKindMismatch {
+                classification,
+                outcome_kind,
+                expected,
+            } if classification == "rejected_crash"
+                && outcome_kind == "interesting_semantic"
+                && expected == "unsafe_crash"
+        ));
+    }
+
+    #[test]
+    fn bucket_database_parser_rejects_unknown_outcome_kind() {
+        let mut database = build_bucket_database(vec![report(
+            "campaign/fuzz-buckets.json",
+            11,
+            vec![bucket(
+                "accepted_with_errors: shared",
+                "accepted_with_errors",
+                1,
+            )],
+        )])
+        .unwrap();
+        database.buckets[0].outcome_kind = "maybe_interesting".to_string();
+
+        let error = validate_bucket_database(&database).unwrap_err();
+
+        assert!(matches!(
+            error,
+            BucketDatabaseError::InvalidOutcomeKind {
+                field: "buckets.outcome_kind",
+                outcome_kind,
+            } if outcome_kind == "maybe_interesting"
+        ));
+    }
+
+    #[test]
+    fn bucket_database_parser_rejects_non_actionable_bucket() {
+        let mut database = build_bucket_database(vec![report(
+            "campaign/fuzz-buckets.json",
+            11,
+            vec![bucket(
+                "accepted_with_errors: shared",
+                "accepted_with_errors",
+                1,
+            )],
+        )])
+        .unwrap();
+        database.buckets[0].signature = "rejected_invalid: bad inode".to_string();
+        database.buckets[0].classification = "rejected_invalid".to_string();
+        database.buckets[0].outcome_kind = "expected_reject".to_string();
+
+        let error = validate_bucket_database(&database).unwrap_err();
+
+        assert!(matches!(
+            error,
+            BucketDatabaseError::NonActionableOutcome { classification }
+                if classification == "rejected_invalid"
         ));
     }
 

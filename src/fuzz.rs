@@ -254,7 +254,7 @@ pub(crate) enum OutcomeKind {
 }
 
 impl OutcomeKind {
-    fn from_classification(classification: &str) -> Self {
+    pub(crate) fn from_classification(classification: &str) -> Self {
         match classification {
             "accepted" => Self::NormalAccept,
             "rejected_checksum"
@@ -274,7 +274,7 @@ impl OutcomeKind {
         }
     }
 
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::NormalAccept => "normal_accept",
             Self::ExpectedReject => "expected_reject",
@@ -285,7 +285,7 @@ impl OutcomeKind {
         }
     }
 
-    fn is_finding(self) -> bool {
+    pub(crate) fn is_finding(self) -> bool {
         matches!(
             self,
             Self::InterestingSemantic
