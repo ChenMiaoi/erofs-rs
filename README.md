@@ -259,8 +259,10 @@ CI is split by cost and feedback speed:
 
 - `.github/workflows/ci.yml` runs on pull requests and pushes. It first checks
   formatting, all-target compilation with warnings as errors, unit tests, and
-  Clippy. A second job builds `vendor/erofs-utils`, installs the local
-  `fsck.erofs` fixture, runs the full Rust test suite, generates seed images,
+  Clippy. A second job builds and briefly runs the Rust-native libFuzzer
+  targets under `fuzz/` with `cargo-fuzz`. A third job builds
+  `vendor/erofs-utils`, installs the local `fsck.erofs` fixture, runs the full
+  Rust test suite, generates seed images,
   runs an `erofs-utils` safety smoke over `mkfs.erofs`, `fsck.erofs`, and
   `dump.erofs`, and performs a deterministic short fuzz smoke with `--no-tui`.
 - `.github/workflows/fuzz-erofs.yml` runs weekly and by manual dispatch. It

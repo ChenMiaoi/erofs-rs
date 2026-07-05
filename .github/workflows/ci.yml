@@ -42,6 +42,33 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
+  rust-libfuzzer-smoke:
+    name: Rust libFuzzer smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: rust-gate
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install nightly Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Build Rust fuzz targets
+        run: cargo +nightly fuzz build
+
+      - name: Run Rust fuzz target smoke
+        run: |
+          cargo +nightly fuzz run superblock_parse -- -runs=1000
+          cargo +nightly fuzz run inode_locate -- -runs=1000
+          cargo +nightly fuzz run dirent_locate -- -runs=1000
+          cargo +nightly fuzz run checksum_fix_no_panic -- -runs=1000
+
   userspace-integration:
     name: Userspace fsck and fuzz smoke
     runs-on: ubuntu-latest
