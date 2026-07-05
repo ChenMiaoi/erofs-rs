@@ -23,6 +23,7 @@ pub enum ParseStage {
     Inode,
     Xattr,
     Chunk,
+    Compression,
     Dirent,
 }
 
@@ -33,6 +34,7 @@ impl fmt::Display for ParseStage {
             Self::Inode => f.write_str("inode"),
             Self::Xattr => f.write_str("xattr"),
             Self::Chunk => f.write_str("chunk"),
+            Self::Compression => f.write_str("compression"),
             Self::Dirent => f.write_str("dirent"),
         }
     }
@@ -64,6 +66,7 @@ pub struct ParseReport {
     pub inodes: Vec<std::result::Result<Inode, ParseError>>,
     pub xattrs: Vec<std::result::Result<XattrRegion, ParseError>>,
     pub chunks: Vec<std::result::Result<ChunkMap, ParseError>>,
+    pub compressions: Vec<std::result::Result<CompressionMap, ParseError>>,
     pub dirents: Vec<std::result::Result<Dirent, ParseError>>,
     pub errors: Vec<ParseError>,
     pub offsets_seen: BTreeSet<usize>,
@@ -90,15 +93,39 @@ pub struct ChunkMap {
     pub desc: String,
 }
 
+/// Located compressed inode map header.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompressionMap {
+    pub inode_nid: u64,
+    pub offset: usize,
+    pub advise: u16,
+    pub algorithm_head1: u8,
+    pub algorithm_head2: u8,
+    pub cluster_bits: u8,
+    pub fragment_packed: bool,
+    pub desc: String,
+}
+
 const INODE_SLOT_SIZE: usize = 32;
 const XATTR_HEADER_SIZE: usize = 12;
 const XATTR_SHARED_ENTRY_SIZE: usize = 4;
+const EROFS_INODE_COMPRESSED_FULL: u16 = 1;
+const EROFS_INODE_COMPRESSED_COMPACT: u16 = 3;
 const EROFS_INODE_CHUNK_BASED: u16 = 4;
 const EROFS_CHUNK_FORMAT_BLKBITS_MASK: u16 = 0x001F;
 const EROFS_CHUNK_FORMAT_INDEXES: u16 = 0x0020;
 const EROFS_CHUNK_FORMAT_ALL: u16 = 0x007F;
 const EROFS_BLOCK_MAP_ENTRY_SIZE: usize = 4;
 const EROFS_CHUNK_INDEX_ENTRY_SIZE: usize = 8;
+const Z_EROFS_MAP_HEADER_SIZE: usize = 8;
+const Z_EROFS_COMPRESSION_MAX: u8 = 4;
+const Z_EROFS_ADVISE_BIG_PCLUSTER_1: u16 = 0x0002;
+const Z_EROFS_ADVISE_BIG_PCLUSTER_2: u16 = 0x0004;
+const Z_EROFS_ADVISE_FRAGMENT_PCLUSTER: u16 = 0x0020;
+const Z_EROFS_ADVISE_KNOWN_MASK: u16 = 0x003F;
+const Z_EROFS_CLUSTERBITS_MASK: u8 = 0x0F;
+const Z_EROFS_CLUSTERBITS_RESERVED_MASK: u8 = 0x70;
+const Z_EROFS_FRAGMENT_INODE_BIT: u8 = 0x80;
 
 /// Parse an image with either strict CLI-style failure or fuzz-tolerant reporting.
 pub fn parse_image(image: &Image, mode: ParseMode) -> Result<ParseReport> {
@@ -172,6 +199,21 @@ pub fn parse_image(image: &Image, mode: ParseMode) -> Result<ParseReport> {
 
         report.chunks = locate_chunks_tolerant(image, &superblock, &parsed_inodes);
         for entry in &report.chunks {
+            match entry {
+                Ok(map) => {
+                    report.offsets_seen.insert(map.offset);
+                }
+                Err(error) => {
+                    if let Some(offset) = error.offset {
+                        report.offsets_seen.insert(offset);
+                    }
+                    report.errors.push(error.clone());
+                }
+            }
+        }
+
+        report.compressions = locate_compressions_tolerant(image, &superblock, &parsed_inodes);
+        for entry in &report.compressions {
             match entry {
                 Ok(map) => {
                     report.offsets_seen.insert(map.offset);
@@ -436,6 +478,16 @@ fn inode_size_tolerant(image: &Image, inode_offset: usize) -> std::result::Resul
     Ok(if (i_format & 0x01) != 0 { 64 } else { 32 })
 }
 
+fn round_up_tolerant(value: usize, align: usize) -> std::result::Result<usize, String> {
+    if align == 0 || !align.is_power_of_two() {
+        return Err(format!("invalid alignment {align}"));
+    }
+    value
+        .checked_add(align - 1)
+        .map(|value| value & !(align - 1))
+        .ok_or_else(|| format!("round_up({value}, {align}) overflows"))
+}
+
 fn locate_chunks_tolerant(
     image: &Image,
     sb: &Superblock,
@@ -645,6 +697,219 @@ fn validate_chunk_map_tolerant(
             entry_count,
             chunk_bits: u8::try_from(chunk_bits).unwrap_or(u8::MAX),
             desc: format!("{}_chunk_map", inode.desc),
+        }))
+    } else {
+        Err(errors)
+    }
+}
+
+fn locate_compressions_tolerant(
+    image: &Image,
+    sb: &Superblock,
+    inodes: &[Inode],
+) -> Vec<std::result::Result<CompressionMap, ParseError>> {
+    let mut maps = Vec::new();
+
+    for inode in inodes {
+        match validate_compression_map_tolerant(image, sb, inode) {
+            Ok(Some(map)) => maps.push(Ok(map)),
+            Ok(None) => {}
+            Err(errors) => maps.extend(errors.into_iter().map(Err)),
+        }
+    }
+
+    maps
+}
+
+fn validate_compression_map_tolerant(
+    image: &Image,
+    sb: &Superblock,
+    inode: &Inode,
+) -> std::result::Result<Option<CompressionMap>, Vec<ParseError>> {
+    let mut errors = Vec::new();
+
+    if inode
+        .offset
+        .checked_add(2)
+        .is_none_or(|end| end > image.len())
+    {
+        return Err(vec![ParseError::new(
+            ParseStage::Compression,
+            Some(inode.offset),
+            "compressed inode format out of bounds",
+        )]);
+    }
+
+    let data = image.as_bytes();
+    let i_format = u16::from_le_bytes([data[inode.offset], data[inode.offset + 1]]);
+    let datalayout = (i_format >> 1) & 0x7;
+    if datalayout != EROFS_INODE_COMPRESSED_FULL && datalayout != EROFS_INODE_COMPRESSED_COMPACT {
+        return Ok(None);
+    }
+
+    let inode_size = match inode_size_tolerant(image, inode.offset) {
+        Ok(size) => size,
+        Err(reason) => {
+            errors.push(ParseError::new(
+                ParseStage::Compression,
+                Some(inode.offset),
+                reason,
+            ));
+            0
+        }
+    };
+    let xattr_size = if inode
+        .offset
+        .checked_add(4)
+        .is_none_or(|end| end > image.len())
+    {
+        errors.push(ParseError::new(
+            ParseStage::Compression,
+            Some(inode.offset),
+            "compressed inode xattr count out of bounds",
+        ));
+        0
+    } else {
+        let i_xattr_icount = u16::from_le_bytes([data[inode.offset + 2], data[inode.offset + 3]]);
+        match xattr_ibody_size_tolerant(i_xattr_icount) {
+            Ok(size) => size,
+            Err(reason) => {
+                errors.push(ParseError::new(
+                    ParseStage::Compression,
+                    Some(inode.offset + 2),
+                    reason,
+                ));
+                0
+            }
+        }
+    };
+    let map_end = match inode
+        .offset
+        .checked_add(inode_size)
+        .and_then(|offset| offset.checked_add(xattr_size))
+    {
+        Some(offset) => offset,
+        None => {
+            return Err(vec![ParseError::new(
+                ParseStage::Compression,
+                Some(inode.offset),
+                "compressed map header offset overflows",
+            )]);
+        }
+    };
+    let map_offset = match round_up_tolerant(map_end, 8) {
+        Ok(offset) => offset,
+        Err(reason) => {
+            return Err(vec![ParseError::new(
+                ParseStage::Compression,
+                Some(map_end),
+                reason,
+            )]);
+        }
+    };
+
+    if map_offset
+        .checked_add(Z_EROFS_MAP_HEADER_SIZE)
+        .is_none_or(|end| end > image.len())
+    {
+        return Err(vec![ParseError::new(
+            ParseStage::Compression,
+            Some(map_offset),
+            "compressed map header out of bounds",
+        )]);
+    }
+
+    let advise = u16::from_le_bytes([data[map_offset + 0x04], data[map_offset + 0x05]]);
+    let algorithmtype = data[map_offset + 0x06];
+    let h_clusterbits = data[map_offset + 0x07];
+    let fragment_packed = h_clusterbits & Z_EROFS_FRAGMENT_INODE_BIT != 0;
+
+    if fragment_packed {
+        return Ok(Some(CompressionMap {
+            inode_nid: inode.nid,
+            offset: map_offset,
+            advise: Z_EROFS_ADVISE_FRAGMENT_PCLUSTER,
+            algorithm_head1: 0,
+            algorithm_head2: 0,
+            cluster_bits: sb.blkszbits,
+            fragment_packed,
+            desc: format!("{}_compression", inode.desc),
+        }));
+    }
+
+    if advise & !Z_EROFS_ADVISE_KNOWN_MASK != 0 {
+        errors.push(ParseError::new(
+            ParseStage::Compression,
+            Some(map_offset + 0x04),
+            format!("unsupported compression advise bits 0x{advise:04X}"),
+        ));
+    }
+    let algorithm_head1 = algorithmtype & 0x0F;
+    let algorithm_head2 = algorithmtype >> 4;
+    if algorithm_head1 >= Z_EROFS_COMPRESSION_MAX {
+        errors.push(ParseError::new(
+            ParseStage::Compression,
+            Some(map_offset + 0x06),
+            format!("invalid HEAD1 compression algorithm {algorithm_head1}"),
+        ));
+    }
+    if algorithm_head2 >= Z_EROFS_COMPRESSION_MAX {
+        errors.push(ParseError::new(
+            ParseStage::Compression,
+            Some(map_offset + 0x06),
+            format!("invalid HEAD2 compression algorithm {algorithm_head2}"),
+        ));
+    }
+
+    if h_clusterbits & Z_EROFS_CLUSTERBITS_RESERVED_MASK != 0 {
+        errors.push(ParseError::new(
+            ParseStage::Compression,
+            Some(map_offset + 0x07),
+            format!("reserved compression cluster bits 0x{h_clusterbits:02X}"),
+        ));
+    }
+    let cluster_extra_bits = h_clusterbits & Z_EROFS_CLUSTERBITS_MASK;
+    let cluster_bits = match sb.blkszbits.checked_add(cluster_extra_bits) {
+        Some(bits) => bits,
+        None => {
+            errors.push(ParseError::new(
+                ParseStage::Compression,
+                Some(map_offset + 0x07),
+                "compression cluster bits overflow",
+            ));
+            u8::MAX
+        }
+    };
+    if cluster_bits >= usize::BITS as u8 {
+        errors.push(ParseError::new(
+            ParseStage::Compression,
+            Some(map_offset + 0x07),
+            format!("compression cluster bits {cluster_bits} exceed host usize width"),
+        ));
+    }
+
+    if datalayout == EROFS_INODE_COMPRESSED_COMPACT {
+        let big1 = advise & Z_EROFS_ADVISE_BIG_PCLUSTER_1 != 0;
+        let big2 = advise & Z_EROFS_ADVISE_BIG_PCLUSTER_2 != 0;
+        if big1 ^ big2 {
+            errors.push(ParseError::new(
+                ParseStage::Compression,
+                Some(map_offset + 0x04),
+                "compact compression big pcluster bits are inconsistent",
+            ));
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(Some(CompressionMap {
+            inode_nid: inode.nid,
+            offset: map_offset,
+            advise,
+            algorithm_head1,
+            algorithm_head2,
+            cluster_bits,
+            fragment_packed,
+            desc: format!("{}_compression", inode.desc),
         }))
     } else {
         Err(errors)

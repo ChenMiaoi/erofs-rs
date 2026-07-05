@@ -141,6 +141,7 @@ fn test_tolerant_parse_reports_valid_fixture_offsets() {
     );
     assert!(report.xattrs.is_empty());
     assert!(report.chunks.is_empty());
+    assert!(report.compressions.is_empty());
     assert!(report.dirents.iter().filter(|entry| entry.is_ok()).count() >= 3);
     assert!(report.offsets_seen.contains(&EROFS_SUPER_OFFSET));
 }
@@ -289,6 +290,41 @@ fn test_tolerant_parse_records_invalid_chunk_info() {
         error.stage == ParseStage::Chunk
             && error.offset == Some(inode_offset + 0x12)
             && error.reason.contains("chunk info reserved field")
+    }));
+}
+
+#[test]
+fn test_tolerant_parse_records_invalid_compression_header() {
+    let mut img = read_image(fixture("single.erofs")).unwrap();
+    let report = parse_image(&img, ParseMode::FuzzTolerant).unwrap();
+    let inode_offset = report
+        .inodes
+        .iter()
+        .filter_map(|entry| entry.as_ref().ok())
+        .find(|inode| inode.desc != "root_directory")
+        .map(|inode| inode.offset)
+        .unwrap();
+    let i_format = img.read_field(inode_offset, FieldWidth::U16).unwrap();
+    let compressed_format = (i_format & 0x01) | (3 << 1);
+    let inode_size = if (i_format & 0x01) != 0 { 64 } else { 32 };
+    let compression_offset = inode_offset
+        .checked_add(inode_size)
+        .and_then(|offset| offset.checked_add(7))
+        .map(|offset| offset & !7)
+        .unwrap();
+    let cluster_bits_offset = compression_offset.checked_add(0x07).unwrap();
+
+    img.write_field(inode_offset, FieldWidth::U16, compressed_format)
+        .unwrap();
+    img.write_field(cluster_bits_offset, FieldWidth::U8, 0x10)
+        .unwrap();
+    let report = parse_image(&img, ParseMode::FuzzTolerant).unwrap();
+
+    assert!(report.offsets_seen.contains(&cluster_bits_offset));
+    assert!(report.errors.iter().any(|error| {
+        error.stage == ParseStage::Compression
+            && error.offset == Some(cluster_bits_offset)
+            && error.reason.contains("reserved compression cluster bits")
     }));
 }
 
