@@ -1,5 +1,6 @@
 use crate::cli::ReplayArgs;
 use crate::fsck::{ExecLimits, FsckResult, run_fsck_with_limits};
+use crate::fuzz::{FuzzArtifactSidecar, parse_fuzz_artifact_sidecar};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -10,33 +11,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use thiserror::Error;
 
-const FUZZ_ARTIFACT_SCHEMA: &str = "erofs-rs.fuzz-artifact.v1";
 pub const REPLAY_REPORT_SCHEMA: &str = "erofs-rs.replay-report.v1";
 const DEFAULT_FSCK_PATH: &str = "./build/erofs-utils/fsck/fsck.erofs";
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-struct ReplayCommands {
-    fsck: Vec<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-struct ReplaySidecar {
-    schema: String,
-    rng_seed: u64,
-    iteration: u64,
-    strategy: String,
-    seed_name: String,
-    artifact_sha256: String,
-    artifact_path: String,
-    commands: ReplayCommands,
-    fsck_exit_code: i32,
-    fsck_timed_out: bool,
-    fsck_kill_process_group: bool,
-    fsck_rss_limit_mb: Option<u64>,
-    classification: String,
-    reason: String,
-    signature: String,
-}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -187,7 +163,7 @@ fn is_sha256_digest(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn limits_from_args(args: &ReplayArgs, sidecar: &ReplaySidecar) -> ExecLimits {
+fn limits_from_args(args: &ReplayArgs, sidecar: &FuzzArtifactSidecar) -> ExecLimits {
     ExecLimits {
         timeout: Duration::from_secs(args.exec_timeout),
         max_output_bytes: args.max_output_bytes,
@@ -196,24 +172,16 @@ fn limits_from_args(args: &ReplayArgs, sidecar: &ReplaySidecar) -> ExecLimits {
     }
 }
 
-fn read_sidecar(path: &Path) -> Result<ReplaySidecar> {
+fn read_sidecar(path: &Path) -> Result<FuzzArtifactSidecar> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("failed to read replay sidecar {}", path.display()))?;
-    let sidecar: ReplaySidecar = serde_json::from_str(&content)
-        .with_context(|| format!("failed to decode replay sidecar {}", path.display()))?;
-    if sidecar.schema != FUZZ_ARTIFACT_SCHEMA {
-        bail!(
-            "unsupported fuzz sidecar schema {} in {}",
-            sidecar.schema,
-            path.display()
-        );
-    }
-    Ok(sidecar)
+    parse_fuzz_artifact_sidecar(&content)
+        .with_context(|| format!("failed to parse replay sidecar {}", path.display()))
 }
 
 fn resolve_artifact(
     sidecar_path: &Path,
-    sidecar: &ReplaySidecar,
+    sidecar: &FuzzArtifactSidecar,
     override_path: Option<&str>,
 ) -> Result<PathBuf> {
     if let Some(path) = override_path {
@@ -245,7 +213,7 @@ fn require_existing_artifact(path: PathBuf) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn fsck_path(args: &ReplayArgs, sidecar: &ReplaySidecar) -> String {
+fn fsck_path(args: &ReplayArgs, sidecar: &FuzzArtifactSidecar) -> String {
     args.fsck
         .clone()
         .or_else(|| sidecar.commands.fsck.first().cloned())
@@ -270,7 +238,7 @@ fn sha256_file(path: &Path) -> Result<String> {
     Ok(hex::encode(hasher.finalize()))
 }
 
-fn replay_matches(sidecar: &ReplaySidecar, result: &FsckResult) -> bool {
+fn replay_matches(sidecar: &FuzzArtifactSidecar, result: &FsckResult) -> bool {
     sidecar.classification == result.classification
         && sidecar.fsck_exit_code == result.exit_code
         && sidecar.fsck_timed_out == result.timed_out
@@ -280,7 +248,7 @@ fn render_report(
     sidecar_path: &Path,
     artifact_path: &Path,
     fsck_path: &str,
-    sidecar: &ReplaySidecar,
+    sidecar: &FuzzArtifactSidecar,
     result: &FsckResult,
     artifact_sha256: &str,
 ) -> String {
@@ -342,7 +310,7 @@ fn build_replay_report(
     sidecar_path: &Path,
     artifact_path: &Path,
     fsck_path: &str,
-    sidecar: &ReplaySidecar,
+    sidecar: &FuzzArtifactSidecar,
     result: &FsckResult,
     artifact_sha256: &str,
 ) -> ReplayReport {
@@ -452,34 +420,70 @@ pub fn run(args: &ReplayArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        REPLAY_REPORT_SCHEMA, ReplayCommands, ReplayReportError, ReplaySidecar,
-        build_replay_report, parse_replay_report, replay_matches, resolve_artifact,
-        validate_replay_report,
+        REPLAY_REPORT_SCHEMA, ReplayReportError, build_replay_report, parse_replay_report,
+        replay_matches, resolve_artifact, validate_replay_report,
     };
     use crate::fsck::FsckResult;
+    use crate::fuzz::{
+        FuzzArtifactCommands, FuzzArtifactSidecar, FuzzArtifactVersions, MutationRecord,
+    };
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
 
-    fn sidecar(artifact_path: &str, classification: &str) -> ReplaySidecar {
-        ReplaySidecar {
+    fn sidecar(artifact_path: &str, classification: &str) -> FuzzArtifactSidecar {
+        FuzzArtifactSidecar {
             schema: "erofs-rs.fuzz-artifact.v1".to_string(),
+            tool: "erofs-rs".to_string(),
+            tool_version: "0.1.0".to_string(),
             rng_seed: 7,
             iteration: 9,
             strategy: "mutation".to_string(),
             seed_name: "seed.erofs".to_string(),
-            artifact_sha256: "hash".to_string(),
+            seed_sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                .to_string(),
+            artifact_sha256: "1111111111111111111111111111111111111111111111111111111111111111"
+                .to_string(),
             artifact_path: artifact_path.to_string(),
-            commands: ReplayCommands {
+            mutations: vec![MutationRecord {
+                kind: "byte".to_string(),
+                field: None,
+                offset: Some(7),
+                width: Some("u8".to_string()),
+                bit: None,
+                old: Some("0x00".to_string()),
+                new: Some("0xff".to_string()),
+            }],
+            commands: FuzzArtifactCommands {
                 fsck: vec!["fsck.erofs".to_string(), artifact_path.to_string()],
+                dump: vec![
+                    "dump.erofs".to_string(),
+                    "-s".to_string(),
+                    artifact_path.to_string(),
+                ],
+                kernel_replay: vec![
+                    "make".to_string(),
+                    "smoke-malformed".to_string(),
+                    format!("MALFORMED_IMG={artifact_path}"),
+                ],
+            },
+            versions: FuzzArtifactVersions {
+                tool_git: None,
+                erofs_utils_git: None,
+                linux_git: None,
             },
             fsck_exit_code: 0,
             fsck_timed_out: false,
             fsck_kill_process_group: true,
+            fsck_killed_process_group: false,
             fsck_rss_limit_mb: None,
+            stdout_truncated: false,
+            stderr_truncated: false,
             classification: classification.to_string(),
             reason: "reason".to_string(),
             signature: format!("{classification}: reason"),
+            stdout_path: "artifact.stdout.txt".to_string(),
+            stderr_path: "artifact.stderr.txt".to_string(),
         }
     }
 

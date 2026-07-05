@@ -195,7 +195,11 @@ command, dump summary command, kernel replay command, git revisions when
 available, classification, exit status, timeout state, and output truncation
 flags. It also records a deterministic signature used by the text report and
 `fuzz-buckets.json` to bucket actionable findings by classification and first
-meaningful tool output line. The JSON bucket report uses the stable
+meaningful tool output line. Sidecars use the stable
+`erofs-rs.fuzz-artifact.v1` schema; replay and bundle parsing rejects unknown
+fields, unknown schemas, malformed SHA-256 digests, empty required fields, and
+empty recorded command vectors before trusting reproduction metadata. The JSON
+bucket report uses the stable
 `erofs-rs.fuzz-buckets.v1` schema and records each signature's count,
 classification, outcome kind, reason, and first-seen example so campaign
 triage does not need to scrape the human report. `--exec-timeout` controls the
@@ -244,15 +248,15 @@ erofs-rs replay \
     --json-report /tmp/replay-report.json
 ```
 
-`replay` consumes a `fuzz` JSON sidecar, locates the artifact image recorded in
-the sidecar, verifies the image SHA-256, reruns `fsck.erofs`, and reports
-whether the replayed classification, exit code, and timeout state match the
-original sidecar metadata. If the original artifact path is stale, `replay`
-also checks for an artifact with the same file name next to the sidecar, which
-keeps finding bundles portable across machines. Use `--artifact` or `--fsck` to
-override the sidecar paths during local triage. `--json-report` writes the
-stable `erofs-rs.replay-report.v1` schema with original and replayed fsck
-outcomes plus match booleans for automation.
+`replay` consumes a validated `erofs-rs.fuzz-artifact.v1` sidecar, locates the
+artifact image recorded in the sidecar, verifies the image SHA-256, reruns
+`fsck.erofs`, and reports whether the replayed classification, exit code, and
+timeout state match the original sidecar metadata. If the original artifact
+path is stale, `replay` also checks for an artifact with the same file name
+next to the sidecar, which keeps finding bundles portable across machines. Use
+`--artifact` or `--fsck` to override the sidecar paths during local triage.
+`--json-report` writes the stable `erofs-rs.replay-report.v1` schema with
+original and replayed fsck outcomes plus match booleans for automation.
 
 ### Finding bundles
 
@@ -269,12 +273,12 @@ any replay, oracle, or kernel reports together. The Rust library validates a
 `bundle.json` manifest with the stable `erofs-rs.finding-bundle.v1` schema so a
 bundle can identify the artifact SHA-256, matching sidecar, optional report
 files, classification, and signature without relying on directory names.
-`bundle` creates this manifest from a fuzz sidecar, verifies the artifact
-SHA-256, includes captured stdout/stderr when the sidecar records them, and
-hashes any optional replay, oracle, or kernel report paths supplied on the
-command line. JSON replay, oracle, and kernel reports are parsed with their
-stable schemas before they enter the bundle; legacy text reports remain opaque
-attachments.
+`bundle` creates this manifest from a validated fuzz sidecar, verifies the
+artifact SHA-256, includes captured stdout/stderr when the sidecar records
+them, and hashes any optional replay, oracle, or kernel report paths supplied
+on the command line. JSON replay, oracle, and kernel reports are parsed with
+their stable schemas before they enter the bundle; legacy text reports remain
+opaque attachments.
 
 ### Coverage-guided fuzz targets
 

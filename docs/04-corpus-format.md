@@ -120,7 +120,10 @@ and summaries where a target has more corpus units after `cmin` than before.
 The sidecar is the source of truth for reproduction. It records the RNG seed,
 iteration, strategy, seed and artifact SHA-256 digests, mutation records,
 commands, tool versions, git revisions, fsck status, timeout state, truncation
-state, classification, reason, and signature.
+state, classification, reason, and signature. The Rust library parser rejects
+unknown sidecar schemas, unknown fields, malformed SHA-256 digests, empty
+required fields, empty command vectors, empty command arguments, and empty
+optional version or mutation string fields.
 
 Campaign-level files:
 
@@ -211,7 +214,7 @@ A portable finding bundle should include:
 The manifest schema is `erofs-rs.finding-bundle.v1`. It stores file paths and
 full SHA-256 digests so a reviewer can verify that reports match the artifact
 under discussion. Use `erofs-rs bundle --sidecar <fuzz_*.json> --output
-bundle.json` to create the manifest from sidecar metadata; pass
+bundle.json` to create the manifest from validated sidecar metadata; pass
 `--replay-report`, `--oracle-report`, or `--kernel-report` to include optional
 reports. The command verifies the artifact digest against the sidecar before
 writing the manifest. JSON replay, oracle, and kernel reports are parsed with

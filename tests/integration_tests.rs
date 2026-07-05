@@ -1169,22 +1169,50 @@ fn test_replay_sidecar_reruns_fsck() {
     let sha256 = file_sha256(&artifact);
     let sidecar_json = serde_json::json!({
         "schema": "erofs-rs.fuzz-artifact.v1",
+        "tool": "erofs-rs",
+        "tool_version": "0.1.0",
         "rng_seed": 123,
         "iteration": 1,
         "strategy": "mutation",
         "seed_name": "single.erofs",
+        "seed_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "artifact_sha256": sha256,
         "artifact_path": "/stale/path/fuzz_seed_iter1.erofs",
+        "mutations": [
+            {
+                "kind": "byte",
+                "offset": 7,
+                "width": "u8",
+                "old": "0x00",
+                "new": "0xff"
+            }
+        ],
         "commands": {
-            "fsck": ["/bin/true", "/stale/path/fuzz_seed_iter1.erofs"]
+            "fsck": ["/bin/true", "/stale/path/fuzz_seed_iter1.erofs"],
+            "dump": ["dump.erofs", "-s", "/stale/path/fuzz_seed_iter1.erofs"],
+            "kernel_replay": [
+                "make",
+                "smoke-malformed",
+                "MALFORMED_IMG=/stale/path/fuzz_seed_iter1.erofs"
+            ]
+        },
+        "versions": {
+            "tool_git": null,
+            "erofs_utils_git": null,
+            "linux_git": null
         },
         "fsck_exit_code": 0,
         "fsck_timed_out": false,
         "fsck_kill_process_group": true,
+        "fsck_killed_process_group": false,
         "fsck_rss_limit_mb": null,
+        "stdout_truncated": false,
+        "stderr_truncated": false,
         "classification": "accepted",
         "reason": "fsck accepted the image",
-        "signature": "accepted: fsck accepted the image"
+        "signature": "accepted: fsck accepted the image",
+        "stdout_path": "/stale/path/fuzz_seed_iter1.stdout.txt",
+        "stderr_path": "/stale/path/fuzz_seed_iter1.stderr.txt"
     });
     fs::write(
         &sidecar,

@@ -3,18 +3,16 @@ use crate::finding_bundle::{
     BundleArtifact, BundleFileRef, FINDING_BUNDLE_SCHEMA, FindingBundleManifest,
     validate_finding_bundle_manifest,
 };
+use crate::fuzz::{FuzzArtifactSidecar, parse_fuzz_artifact_sidecar};
 use crate::kernel_replay::parse_kernel_replay_report;
 use crate::oracle::parse_oracle_json_report;
 use crate::replay::parse_replay_report;
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-
-const FUZZ_ARTIFACT_SCHEMA: &str = "erofs-rs.fuzz-artifact.v1";
 
 #[derive(Clone, Copy, Debug)]
 enum OptionalReportKind {
@@ -33,30 +31,11 @@ impl OptionalReportKind {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
-struct BundleSidecar {
-    schema: String,
-    artifact_path: String,
-    artifact_sha256: String,
-    classification: String,
-    signature: String,
-    stdout_path: Option<String>,
-    stderr_path: Option<String>,
-}
-
-fn read_sidecar(path: &Path) -> Result<BundleSidecar> {
+fn read_sidecar(path: &Path) -> Result<FuzzArtifactSidecar> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("failed to read bundle sidecar {}", path.display()))?;
-    let sidecar: BundleSidecar = serde_json::from_str(&content)
-        .with_context(|| format!("failed to decode bundle sidecar {}", path.display()))?;
-    if sidecar.schema != FUZZ_ARTIFACT_SCHEMA {
-        bail!(
-            "unsupported fuzz sidecar schema {} in {}",
-            sidecar.schema,
-            path.display()
-        );
-    }
-    Ok(sidecar)
+    parse_fuzz_artifact_sidecar(&content)
+        .with_context(|| format!("failed to parse bundle sidecar {}", path.display()))
 }
 
 fn sha256_file(path: &Path) -> Result<String> {
@@ -104,7 +83,7 @@ fn resolve_recorded_path(sidecar_path: &Path, recorded_path: &str, field: &str) 
 
 fn resolve_artifact(
     sidecar_path: &Path,
-    sidecar: &BundleSidecar,
+    sidecar: &FuzzArtifactSidecar,
     override_path: Option<&str>,
 ) -> Result<PathBuf> {
     if let Some(path) = override_path {
@@ -193,13 +172,13 @@ fn build_manifest(args: &BundleArgs) -> Result<FindingBundleManifest> {
 
     let stdout_path = resolve_optional_sidecar_file(
         sidecar_path,
-        sidecar.stdout_path.as_deref(),
+        Some(sidecar.stdout_path.as_str()),
         args.stdout.as_deref(),
         "stdout",
     )?;
     let stderr_path = resolve_optional_sidecar_file(
         sidecar_path,
-        sidecar.stderr_path.as_deref(),
+        Some(sidecar.stderr_path.as_str()),
         args.stderr.as_deref(),
         "stderr",
     )?;
@@ -270,7 +249,71 @@ mod tests {
     use crate::cli::BundleArgs;
     use crate::finding_bundle::FindingBundleManifest;
     use std::fs;
+    use std::path::Path;
     use tempfile::TempDir;
+
+    fn write_sidecar_fixture(
+        sidecar: &Path,
+        artifact: &Path,
+        stdout: &Path,
+        stderr: &Path,
+        artifact_sha256: &str,
+        classification: &str,
+        signature: &str,
+    ) {
+        let sidecar_json = serde_json::json!({
+            "schema": "erofs-rs.fuzz-artifact.v1",
+            "tool": "erofs-rs",
+            "tool_version": "0.1.0",
+            "rng_seed": 1,
+            "iteration": 1,
+            "strategy": "mutation",
+            "seed_name": "seed.erofs",
+            "seed_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "artifact_sha256": artifact_sha256,
+            "artifact_path": artifact.to_string_lossy(),
+            "mutations": [
+                {
+                    "kind": "byte",
+                    "offset": 7,
+                    "width": "u8",
+                    "old": "0x00",
+                    "new": "0xff"
+                }
+            ],
+            "commands": {
+                "fsck": ["fsck.erofs", artifact.to_string_lossy()],
+                "dump": ["dump.erofs", "-s", artifact.to_string_lossy()],
+                "kernel_replay": [
+                    "make",
+                    "smoke-malformed",
+                    format!("MALFORMED_IMG={}", artifact.display())
+                ]
+            },
+            "versions": {
+                "tool_git": null,
+                "erofs_utils_git": null,
+                "linux_git": null
+            },
+            "fsck_exit_code": 0,
+            "fsck_timed_out": false,
+            "fsck_kill_process_group": true,
+            "fsck_killed_process_group": false,
+            "fsck_rss_limit_mb": null,
+            "stdout_truncated": false,
+            "stderr_truncated": false,
+            "classification": classification,
+            "reason": "fsck accepted the image",
+            "signature": signature,
+            "stdout_path": stdout.to_string_lossy(),
+            "stderr_path": stderr.to_string_lossy()
+        });
+        fs::write(
+            sidecar,
+            serde_json::to_string_pretty(&sidecar_json).unwrap(),
+        )
+        .unwrap();
+    }
 
     #[test]
     fn bundle_manifest_uses_sidecar_metadata_and_sibling_files() {
@@ -284,20 +327,15 @@ mod tests {
         fs::write(&stdout, b"stdout").unwrap();
         fs::write(&stderr, b"stderr").unwrap();
         let artifact_sha256 = sha256_file(&artifact).unwrap();
-        let sidecar_json = serde_json::json!({
-            "schema": "erofs-rs.fuzz-artifact.v1",
-            "artifact_path": "/stale/path/fuzz_seed_iter1.erofs",
-            "artifact_sha256": artifact_sha256,
-            "classification": "sanitizer_crash",
-            "signature": "sanitizer_crash: AddressSanitizer",
-            "stdout_path": "/stale/path/fuzz_seed_iter1.stdout.txt",
-            "stderr_path": "/stale/path/fuzz_seed_iter1.stderr.txt"
-        });
-        fs::write(
+        write_sidecar_fixture(
             &sidecar,
-            serde_json::to_string_pretty(&sidecar_json).unwrap(),
-        )
-        .unwrap();
+            Path::new("/stale/path/fuzz_seed_iter1.erofs"),
+            Path::new("/stale/path/fuzz_seed_iter1.stdout.txt"),
+            Path::new("/stale/path/fuzz_seed_iter1.stderr.txt"),
+            &artifact_sha256,
+            "sanitizer_crash",
+            "sanitizer_crash: AddressSanitizer",
+        );
 
         let args = BundleArgs {
             sidecar: sidecar.to_string_lossy().to_string(),
@@ -337,22 +375,23 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let artifact = tmp.path().join("fuzz_seed_iter1.erofs");
         let sidecar = tmp.path().join("fuzz_seed_iter1.json");
+        let stdout = tmp.path().join("fuzz_seed_iter1.stdout.txt");
+        let stderr = tmp.path().join("fuzz_seed_iter1.stderr.txt");
         let replay_report = tmp.path().join("replay-report.json");
         let output = tmp.path().join("bundle.json");
         fs::write(&artifact, b"image").unwrap();
+        fs::write(&stdout, b"stdout").unwrap();
+        fs::write(&stderr, b"stderr").unwrap();
         let artifact_sha256 = sha256_file(&artifact).unwrap();
-        fs::write(
+        write_sidecar_fixture(
             &sidecar,
-            serde_json::to_string_pretty(&serde_json::json!({
-                "schema": "erofs-rs.fuzz-artifact.v1",
-                "artifact_path": artifact.to_string_lossy(),
-                "artifact_sha256": artifact_sha256,
-                "classification": "accepted",
-                "signature": "accepted: fsck accepted the image"
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+            &artifact,
+            &stdout,
+            &stderr,
+            &artifact_sha256,
+            "accepted",
+            "accepted: fsck accepted the image",
+        );
         fs::write(
             &replay_report,
             serde_json::to_string_pretty(&serde_json::json!({
@@ -417,22 +456,23 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let artifact = tmp.path().join("fuzz_seed_iter1.erofs");
         let sidecar = tmp.path().join("fuzz_seed_iter1.json");
+        let stdout = tmp.path().join("fuzz_seed_iter1.stdout.txt");
+        let stderr = tmp.path().join("fuzz_seed_iter1.stderr.txt");
         let oracle_report = tmp.path().join("oracle-report.json");
         let output = tmp.path().join("bundle.json");
         fs::write(&artifact, b"image").unwrap();
+        fs::write(&stdout, b"stdout").unwrap();
+        fs::write(&stderr, b"stderr").unwrap();
         let artifact_sha256 = sha256_file(&artifact).unwrap();
-        fs::write(
+        write_sidecar_fixture(
             &sidecar,
-            serde_json::to_string_pretty(&serde_json::json!({
-                "schema": "erofs-rs.fuzz-artifact.v1",
-                "artifact_path": artifact.to_string_lossy(),
-                "artifact_sha256": artifact_sha256,
-                "classification": "accepted",
-                "signature": "accepted: fsck accepted the image"
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+            &artifact,
+            &stdout,
+            &stderr,
+            &artifact_sha256,
+            "accepted",
+            "accepted: fsck accepted the image",
+        );
         fs::write(&oracle_report, r#"{"schema":"erofs-rs.oracle-report.v0"}"#).unwrap();
 
         let args = BundleArgs {
@@ -455,23 +495,24 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let artifact = tmp.path().join("fuzz_seed_iter1.erofs");
         let sidecar = tmp.path().join("fuzz_seed_iter1.json");
+        let stdout = tmp.path().join("fuzz_seed_iter1.stdout.txt");
+        let stderr = tmp.path().join("fuzz_seed_iter1.stderr.txt");
         let replay_report = tmp.path().join("replay-report.txt");
         let output = tmp.path().join("bundle.json");
         fs::write(&artifact, b"image").unwrap();
+        fs::write(&stdout, b"stdout").unwrap();
+        fs::write(&stderr, b"stderr").unwrap();
         fs::write(&replay_report, "# EROFS Fuzz Artifact Replay Report\n").unwrap();
         let artifact_sha256 = sha256_file(&artifact).unwrap();
-        fs::write(
+        write_sidecar_fixture(
             &sidecar,
-            serde_json::to_string_pretty(&serde_json::json!({
-                "schema": "erofs-rs.fuzz-artifact.v1",
-                "artifact_path": artifact.to_string_lossy(),
-                "artifact_sha256": artifact_sha256,
-                "classification": "accepted",
-                "signature": "accepted: fsck accepted the image"
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+            &artifact,
+            &stdout,
+            &stderr,
+            &artifact_sha256,
+            "accepted",
+            "accepted: fsck accepted the image",
+        );
 
         let args = BundleArgs {
             sidecar: sidecar.to_string_lossy().to_string(),

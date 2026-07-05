@@ -13,71 +13,208 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
+use thiserror::Error;
 
-const FUZZ_ARTIFACT_SCHEMA: &str = "erofs-rs.fuzz-artifact.v1";
+pub const FUZZ_ARTIFACT_SCHEMA: &str = "erofs-rs.fuzz-artifact.v1";
 const FUZZ_BUCKET_REPORT_SCHEMA: &str = "erofs-rs.fuzz-buckets.v1";
 const TOOL_NAME: &str = "erofs-rs";
 const TOOL_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_DUMP_PATH: &str = "./build/erofs-utils/dump/dump.erofs";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct MutationRecord {
-    kind: String,
+#[serde(deny_unknown_fields)]
+pub struct MutationRecord {
+    pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    field: Option<String>,
+    pub field: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    offset: Option<usize>,
+    pub offset: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    width: Option<String>,
+    pub width: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    bit: Option<u8>,
+    pub bit: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    old: Option<String>,
+    pub old: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    new: Option<String>,
+    pub new: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct FuzzArtifactCommands {
-    fsck: Vec<String>,
-    dump: Vec<String>,
-    kernel_replay: Vec<String>,
+#[serde(deny_unknown_fields)]
+pub struct FuzzArtifactCommands {
+    pub fsck: Vec<String>,
+    pub dump: Vec<String>,
+    pub kernel_replay: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct FuzzArtifactVersions {
-    tool_git: Option<String>,
-    erofs_utils_git: Option<String>,
-    linux_git: Option<String>,
+#[serde(deny_unknown_fields)]
+pub struct FuzzArtifactVersions {
+    pub tool_git: Option<String>,
+    pub erofs_utils_git: Option<String>,
+    pub linux_git: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct FuzzArtifactSidecar {
-    schema: String,
-    tool: String,
-    tool_version: String,
-    rng_seed: u64,
-    iteration: u64,
-    strategy: String,
-    seed_name: String,
-    seed_sha256: String,
-    artifact_sha256: String,
-    artifact_path: String,
-    mutations: Vec<MutationRecord>,
-    commands: FuzzArtifactCommands,
-    versions: FuzzArtifactVersions,
-    fsck_exit_code: i32,
-    fsck_timed_out: bool,
-    fsck_kill_process_group: bool,
-    fsck_killed_process_group: bool,
-    fsck_rss_limit_mb: Option<u64>,
-    stdout_truncated: bool,
-    stderr_truncated: bool,
-    classification: String,
-    reason: String,
-    signature: String,
-    stdout_path: String,
-    stderr_path: String,
+#[serde(deny_unknown_fields)]
+pub struct FuzzArtifactSidecar {
+    pub schema: String,
+    pub tool: String,
+    pub tool_version: String,
+    pub rng_seed: u64,
+    pub iteration: u64,
+    pub strategy: String,
+    pub seed_name: String,
+    pub seed_sha256: String,
+    pub artifact_sha256: String,
+    pub artifact_path: String,
+    pub mutations: Vec<MutationRecord>,
+    pub commands: FuzzArtifactCommands,
+    pub versions: FuzzArtifactVersions,
+    pub fsck_exit_code: i32,
+    pub fsck_timed_out: bool,
+    pub fsck_kill_process_group: bool,
+    pub fsck_killed_process_group: bool,
+    pub fsck_rss_limit_mb: Option<u64>,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+    pub classification: String,
+    pub reason: String,
+    pub signature: String,
+    pub stdout_path: String,
+    pub stderr_path: String,
+}
+
+#[derive(Debug, Error)]
+pub enum FuzzArtifactSidecarError {
+    #[error("failed to decode fuzz artifact sidecar: {0}")]
+    Decode(#[from] serde_json::Error),
+    #[error("unsupported fuzz artifact sidecar schema: {0}")]
+    UnsupportedSchema(String),
+    #[error("fuzz artifact sidecar field {0} is empty")]
+    EmptyField(&'static str),
+    #[error("fuzz artifact sidecar list {0} is empty")]
+    EmptyList(&'static str),
+    #[error("fuzz artifact sidecar field {field} has invalid SHA-256 digest: {sha256}")]
+    InvalidSha256 { field: &'static str, sha256: String },
+}
+
+pub fn parse_fuzz_artifact_sidecar(
+    content: &str,
+) -> std::result::Result<FuzzArtifactSidecar, FuzzArtifactSidecarError> {
+    let sidecar: FuzzArtifactSidecar = serde_json::from_str(content)?;
+    validate_fuzz_artifact_sidecar(&sidecar)?;
+    Ok(sidecar)
+}
+
+pub fn validate_fuzz_artifact_sidecar(
+    sidecar: &FuzzArtifactSidecar,
+) -> std::result::Result<(), FuzzArtifactSidecarError> {
+    if sidecar.schema != FUZZ_ARTIFACT_SCHEMA {
+        return Err(FuzzArtifactSidecarError::UnsupportedSchema(
+            sidecar.schema.clone(),
+        ));
+    }
+    require_sidecar_nonempty("tool", &sidecar.tool)?;
+    require_sidecar_nonempty("tool_version", &sidecar.tool_version)?;
+    require_sidecar_nonempty("strategy", &sidecar.strategy)?;
+    require_sidecar_nonempty("seed_name", &sidecar.seed_name)?;
+    require_sidecar_nonempty("artifact_path", &sidecar.artifact_path)?;
+    require_sidecar_nonempty("classification", &sidecar.classification)?;
+    require_sidecar_nonempty("reason", &sidecar.reason)?;
+    require_sidecar_nonempty("signature", &sidecar.signature)?;
+    require_sidecar_nonempty("stdout_path", &sidecar.stdout_path)?;
+    require_sidecar_nonempty("stderr_path", &sidecar.stderr_path)?;
+    require_sidecar_sha256("seed_sha256", &sidecar.seed_sha256)?;
+    require_sidecar_sha256("artifact_sha256", &sidecar.artifact_sha256)?;
+    validate_sidecar_commands(&sidecar.commands)?;
+    validate_sidecar_versions(&sidecar.versions)?;
+    for mutation in &sidecar.mutations {
+        validate_mutation_record(mutation)?;
+    }
+    Ok(())
+}
+
+fn validate_sidecar_commands(
+    commands: &FuzzArtifactCommands,
+) -> std::result::Result<(), FuzzArtifactSidecarError> {
+    require_sidecar_command("commands.fsck", &commands.fsck)?;
+    require_sidecar_command("commands.dump", &commands.dump)?;
+    require_sidecar_command("commands.kernel_replay", &commands.kernel_replay)?;
+    Ok(())
+}
+
+fn validate_sidecar_versions(
+    versions: &FuzzArtifactVersions,
+) -> std::result::Result<(), FuzzArtifactSidecarError> {
+    require_sidecar_optional_nonempty("versions.tool_git", versions.tool_git.as_deref())?;
+    require_sidecar_optional_nonempty(
+        "versions.erofs_utils_git",
+        versions.erofs_utils_git.as_deref(),
+    )?;
+    require_sidecar_optional_nonempty("versions.linux_git", versions.linux_git.as_deref())?;
+    Ok(())
+}
+
+fn validate_mutation_record(
+    mutation: &MutationRecord,
+) -> std::result::Result<(), FuzzArtifactSidecarError> {
+    require_sidecar_nonempty("mutations.kind", &mutation.kind)?;
+    require_sidecar_optional_nonempty("mutations.field", mutation.field.as_deref())?;
+    require_sidecar_optional_nonempty("mutations.width", mutation.width.as_deref())?;
+    require_sidecar_optional_nonempty("mutations.old", mutation.old.as_deref())?;
+    require_sidecar_optional_nonempty("mutations.new", mutation.new.as_deref())?;
+    Ok(())
+}
+
+fn require_sidecar_command(
+    field: &'static str,
+    command: &[String],
+) -> std::result::Result<(), FuzzArtifactSidecarError> {
+    if command.is_empty() {
+        return Err(FuzzArtifactSidecarError::EmptyList(field));
+    }
+    for arg in command {
+        require_sidecar_nonempty(field, arg)?;
+    }
+    Ok(())
+}
+
+fn require_sidecar_optional_nonempty(
+    field: &'static str,
+    value: Option<&str>,
+) -> std::result::Result<(), FuzzArtifactSidecarError> {
+    if let Some(value) = value {
+        require_sidecar_nonempty(field, value)?;
+    }
+    Ok(())
+}
+
+fn require_sidecar_nonempty(
+    field: &'static str,
+    value: &str,
+) -> std::result::Result<(), FuzzArtifactSidecarError> {
+    if value.is_empty() {
+        return Err(FuzzArtifactSidecarError::EmptyField(field));
+    }
+    Ok(())
+}
+
+fn require_sidecar_sha256(
+    field: &'static str,
+    value: &str,
+) -> std::result::Result<(), FuzzArtifactSidecarError> {
+    if !is_sha256_digest(value) {
+        return Err(FuzzArtifactSidecarError::InvalidSha256 {
+            field,
+            sha256: value.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn is_sha256_digest(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -617,6 +754,8 @@ fn write_artifact_text(path: &Path, contents: &str) -> Result<()> {
 }
 
 fn write_fuzz_sidecar(path: &Path, sidecar: &FuzzArtifactSidecar) -> Result<()> {
+    validate_fuzz_artifact_sidecar(sidecar)
+        .map_err(|error| anyhow::anyhow!("generated fuzz artifact sidecar is invalid: {error}"))?;
     let json = serde_json::to_string_pretty(sidecar)
         .map_err(|e| anyhow::anyhow!("failed to serialize fuzz sidecar: {e}"))?;
     fs::write(path, json + "\n")
@@ -933,8 +1072,10 @@ mod tests {
     use super::run as run_fuzz;
     use super::{
         DEFAULT_DUMP_PATH, FUZZ_ARTIFACT_SCHEMA, FUZZ_BUCKET_REPORT_SCHEMA, FuzzArtifactSidecar,
-        FuzzRun, FuzzSidecarInput, FuzzSummary, OutcomeKind, build_fuzz_sidecar, finding_signature,
-        git_revision, mutation_record, sha256_hex, strategy_name, write_fuzz_report,
+        FuzzArtifactSidecarError, FuzzRun, FuzzSidecarInput, FuzzSummary, OutcomeKind,
+        build_fuzz_sidecar, finding_signature, git_revision, mutation_record,
+        parse_fuzz_artifact_sidecar, sha256_hex, strategy_name, validate_fuzz_artifact_sidecar,
+        write_fuzz_report,
     };
     use crate::cli::{FuzzArgs, FuzzStrategy};
     use crate::image::{FieldWidth, Image};
@@ -961,6 +1102,57 @@ mod tests {
             seed_count: 1,
             report_path: "/tmp/out/fuzz-report.txt".to_string(),
         }
+    }
+
+    fn valid_sidecar() -> FuzzArtifactSidecar {
+        let args = FuzzArgs {
+            input_dir: "seeds".to_string(),
+            output_dir: "out".to_string(),
+            max_time: 1,
+            fsck: "fsck.erofs".to_string(),
+            seed: Some(123),
+            no_tui: true,
+            strategy: FuzzStrategy::Mutation,
+            exec_timeout: 30,
+            max_output_bytes: 1024,
+            no_kill_process_group: false,
+            rss_limit_mb: Some(64),
+        };
+        let artifact_path = Path::new("out/fuzz_seed_iter1.erofs");
+        let stdout_path = Path::new("out/fuzz_seed_iter1.stdout.txt");
+        let stderr_path = Path::new("out/fuzz_seed_iter1.stderr.txt");
+        let mutations = vec![mutation_record(
+            "byte",
+            None,
+            Some(7),
+            Some(FieldWidth::U8),
+            None,
+            Some("0x00".to_string()),
+            Some("0xFF".to_string()),
+        )];
+
+        build_fuzz_sidecar(FuzzSidecarInput {
+            args: &args,
+            rng_seed: 123,
+            iteration: 1,
+            seed_name: "seed",
+            seed_sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            artifact_sha256: "1111111111111111111111111111111111111111111111111111111111111111",
+            artifact_path,
+            mutations,
+            fsck_exit_code: 1,
+            fsck_timed_out: false,
+            fsck_kill_process_group: true,
+            fsck_killed_process_group: false,
+            fsck_rss_limit_mb: Some(64),
+            stdout_truncated: false,
+            stderr_truncated: true,
+            classification: "rejected_invalid",
+            reason: "fsck rejected as invalid",
+            signature: "rejected_invalid: bad inode",
+            stdout_path,
+            stderr_path,
+        })
     }
 
     #[test]
@@ -1006,8 +1198,8 @@ mod tests {
             rng_seed: 123,
             iteration: 1,
             seed_name: "seed",
-            seed_sha256: "seedhash",
-            artifact_sha256: "artifacthash",
+            seed_sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            artifact_sha256: "1111111111111111111111111111111111111111111111111111111111111111",
             artifact_path,
             mutations,
             fsck_exit_code: 1,
@@ -1024,7 +1216,7 @@ mod tests {
             stderr_path,
         });
         let json = serde_json::to_string(&sidecar).unwrap();
-        let decoded: FuzzArtifactSidecar = serde_json::from_str(&json).unwrap();
+        let decoded = parse_fuzz_artifact_sidecar(&json).unwrap();
 
         assert_eq!(decoded, sidecar);
         assert_eq!(decoded.schema, FUZZ_ARTIFACT_SCHEMA);
@@ -1038,6 +1230,48 @@ mod tests {
         assert!(decoded.stderr_truncated);
         assert_eq!(decoded.signature, "rejected_invalid: bad inode");
         assert_eq!(decoded.mutations[0].old.as_deref(), Some("0x00"));
+    }
+
+    #[test]
+    fn fuzz_sidecar_rejects_unknown_schema() {
+        let mut sidecar = valid_sidecar();
+        sidecar.schema = "erofs-rs.fuzz-artifact.v0".to_string();
+
+        let error = validate_fuzz_artifact_sidecar(&sidecar).unwrap_err();
+
+        assert!(matches!(
+            error,
+            FuzzArtifactSidecarError::UnsupportedSchema(_)
+        ));
+    }
+
+    #[test]
+    fn fuzz_sidecar_rejects_invalid_artifact_hash() {
+        let mut sidecar = valid_sidecar();
+        sidecar.artifact_sha256 = "not-sha".to_string();
+
+        let error = validate_fuzz_artifact_sidecar(&sidecar).unwrap_err();
+
+        assert!(matches!(
+            error,
+            FuzzArtifactSidecarError::InvalidSha256 {
+                field: "artifact_sha256",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn fuzz_sidecar_rejects_empty_fsck_command() {
+        let mut sidecar = valid_sidecar();
+        sidecar.commands.fsck.clear();
+
+        let error = validate_fuzz_artifact_sidecar(&sidecar).unwrap_err();
+
+        assert!(matches!(
+            error,
+            FuzzArtifactSidecarError::EmptyList("commands.fsck")
+        ));
     }
 
     #[test]
