@@ -322,6 +322,10 @@ pub fn classify_fsck_result(
         return ("rejected_crash", signal);
     }
 
+    if contains_sanitizer_diagnostic(&combined) {
+        return ("sanitizer_crash", "sanitizer diagnostic detected");
+    }
+
     let has_error_keyword = [
         "error",
         "failed",
@@ -376,6 +380,19 @@ fn fatal_signal_name(exit_code: i32) -> Option<&'static str> {
     }
 }
 
+fn contains_sanitizer_diagnostic(text: &str) -> bool {
+    [
+        "addresssanitizer",
+        "undefinedbehaviorsanitizer",
+        "memorysanitizer",
+        "threadsanitizer",
+        "leaksanitizer",
+        "runtime error:",
+    ]
+    .iter()
+    .any(|needle| text.contains(needle))
+}
+
 #[cfg(test)]
 mod tests {
     use super::classify_fsck_result;
@@ -397,6 +414,18 @@ mod tests {
         assert_eq!(
             classify_fsck_result(139, "", ""),
             ("rejected_crash", "fsck terminated with SIGSEGV")
+        );
+    }
+
+    #[test]
+    fn classifies_sanitizer_diagnostics() {
+        assert_eq!(
+            classify_fsck_result(1, "==1==ERROR: AddressSanitizer: heap-buffer-overflow", ""),
+            ("sanitizer_crash", "sanitizer diagnostic detected")
+        );
+        assert_eq!(
+            classify_fsck_result(1, "", "runtime error: load of misaligned address"),
+            ("sanitizer_crash", "sanitizer diagnostic detected")
         );
     }
 }

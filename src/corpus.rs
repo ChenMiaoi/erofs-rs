@@ -23,6 +23,7 @@ const KNOWN_RESULTS: &[&str] = &[
     "rejected_other",
     "rejected_timeout",
     "rejected_crash",
+    "sanitizer_crash",
 ];
 
 #[derive(Clone, Debug, Default)]
@@ -707,6 +708,7 @@ mod tests {
         assert_eq!(lifecycle_bucket("rejected_io_error"), "rejects/other");
         assert_eq!(lifecycle_bucket("rejected_timeout"), "timeouts/userspace");
         assert_eq!(lifecycle_bucket("rejected_crash"), "crashes/userspace");
+        assert_eq!(lifecycle_bucket("sanitizer_crash"), "crashes/sanitizer");
         assert_eq!(lifecycle_bucket("asan_sanitizer"), "crashes/sanitizer");
         assert_eq!(lifecycle_bucket("kernel_oops"), "crashes/kernel");
     }
