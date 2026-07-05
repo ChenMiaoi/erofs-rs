@@ -141,7 +141,7 @@ impl FuzzSummary {
 fn sha256_hex(image: &Image) -> String {
     let mut hasher = Sha256::new();
     hasher.update(image.as_bytes());
-    hex::encode(hasher.finalize())[..16].to_string()
+    hex::encode(hasher.finalize())
 }
 
 fn load_seeds(input_dir: &str) -> Result<Vec<(String, Image)>> {
@@ -434,7 +434,8 @@ fn run_mutation_fuzz(args: &FuzzArgs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{FuzzRun, FuzzSummary, OutcomeKind};
+    use super::{FuzzRun, FuzzSummary, OutcomeKind, sha256_hex};
+    use crate::image::Image;
     use std::time::Duration;
 
     fn run(classification: &str) -> FuzzRun {
@@ -455,6 +456,16 @@ mod tests {
             seed_count: 1,
             report_path: "/tmp/out/fuzz-report.txt".to_string(),
         }
+    }
+
+    #[test]
+    fn sha256_hex_returns_full_digest() {
+        let image = Image::new(b"abc".to_vec());
+
+        assert_eq!(
+            sha256_hex(&image),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 
     #[test]

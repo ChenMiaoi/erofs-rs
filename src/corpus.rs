@@ -28,7 +28,7 @@ fn file_hash(path: &Path) -> Result<String> {
     let data =
         fs::read(path).map_err(|e| anyhow::anyhow!("failed to read {}: {e}", path.display()))?;
     hasher.update(data);
-    Ok(hex::encode(hasher.finalize())[..16].to_string())
+    Ok(hex::encode(hasher.finalize()))
 }
 
 fn read_manifest(path: &Path) -> Vec<ManifestEntry> {
@@ -166,8 +166,8 @@ pub fn run(args: &CorpusArgs) -> Result<()> {
         String::new(),
         "## All Unique Artifacts".to_string(),
         String::new(),
-        format!("{:<50} {:<25} {:<16}", "file", "category", "hash"),
-        "-".repeat(95),
+        format!("{:<50} {:<25} {:<64}", "file", "category", "hash"),
+        "-".repeat(141),
     ]);
 
     for (entry, cat, h) in &all_entries {
@@ -186,4 +186,23 @@ pub fn run(args: &CorpusArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::file_hash;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn file_hash_returns_full_sha256_digest() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("input.erofs");
+        fs::write(&path, b"abc").unwrap();
+
+        assert_eq!(
+            file_hash(&path).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
 }
