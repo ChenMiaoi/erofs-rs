@@ -242,10 +242,11 @@ classification/outcome metadata are rejected instead of merged silently.
 Bucket reports are parsed as the exact `erofs-rs.fuzz-buckets.v1` schema, so
 unknown fields, invalid or mismatched outcome kinds, non-actionable buckets,
 signature prefix mismatches, and mismatched actionable finding counts are
-rejected too. The Rust library parser also rejects unknown bucket database
-schemas, duplicate source reports or signatures, examples that reference
-unknown source reports, inconsistent outcome metadata, and inconsistent
-per-source bucket counts.
+rejected too. The parser also rejects campaign totals where unique images
+exceed iterations or actionable findings exceed unique images. The Rust library
+parser also rejects unknown bucket database schemas, duplicate source reports
+or signatures, examples that reference unknown source reports, inconsistent
+outcome metadata, and inconsistent per-source bucket counts.
 
 ### `replay` – sidecar-based reproduction
 

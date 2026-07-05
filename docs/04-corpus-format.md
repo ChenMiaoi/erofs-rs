@@ -149,9 +149,10 @@ Use `erofs-rs triage` to merge multiple `fuzz-buckets.json` files into an
 `erofs-rs.bucket-db.v1` bucket database. The Rust parser rejects unknown
 bucket report fields, invalid or mismatched outcome kinds, non-actionable
 buckets, signature prefix mismatches, mismatched actionable finding counts,
-unknown database schemas, duplicate source reports or signatures, unknown
-example source reports, inconsistent outcome metadata, and source bucket counts
-that do not match the examples.
+campaign totals where unique images exceed iterations or actionable findings
+exceed unique images, unknown database schemas, duplicate source reports or
+signatures, unknown example source reports, inconsistent outcome metadata, and
+source bucket counts that do not match the examples.
 
 ## Mutation Manifests
 

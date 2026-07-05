@@ -191,6 +191,20 @@ pub fn validate_fuzz_bucket_report(
     require_bucket_report_nonempty("tool", &report.tool)?;
     require_bucket_report_nonempty("tool_version", &report.tool_version)?;
     require_bucket_report_nonempty("text_report_path", &report.text_report_path)?;
+    if report.unique_images > report.iterations {
+        return Err(FuzzBucketReportError::CountMismatch {
+            field: "unique_images",
+            expected: report.iterations,
+            actual: report.unique_images,
+        });
+    }
+    if report.actionable_findings > report.unique_images {
+        return Err(FuzzBucketReportError::CountMismatch {
+            field: "actionable_findings",
+            expected: report.unique_images,
+            actual: report.actionable_findings,
+        });
+    }
 
     let mut signatures = HashSet::new();
     let mut actionable_findings = 0u64;
@@ -840,6 +854,57 @@ mod tests {
             )],
             "fuzz-report.txt".to_string(),
         );
+        report.actionable_findings = 2;
+
+        let error = validate_fuzz_bucket_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            FuzzBucketReportError::CountMismatch {
+                field: "actionable_findings",
+                expected: 1,
+                actual: 2,
+            }
+        ));
+    }
+
+    #[test]
+    fn fuzz_bucket_report_parser_rejects_unique_images_above_iterations() {
+        let mut report = fuzz_report(
+            11,
+            vec![bucket(
+                "accepted_with_errors: shared",
+                "accepted_with_errors",
+                1,
+            )],
+            "fuzz-report.txt".to_string(),
+        );
+        report.unique_images = 11;
+
+        let error = validate_fuzz_bucket_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            FuzzBucketReportError::CountMismatch {
+                field: "unique_images",
+                expected: 10,
+                actual: 11,
+            }
+        ));
+    }
+
+    #[test]
+    fn fuzz_bucket_report_parser_rejects_findings_above_unique_images() {
+        let mut report = fuzz_report(
+            11,
+            vec![bucket(
+                "accepted_with_errors: shared",
+                "accepted_with_errors",
+                1,
+            )],
+            "fuzz-report.txt".to_string(),
+        );
+        report.unique_images = 1;
         report.actionable_findings = 2;
 
         let error = validate_fuzz_bucket_report(&report).unwrap_err();
