@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use thiserror::Error;
 
 pub const FINDING_BUNDLE_SCHEMA: &str = "erofs-rs.finding-bundle.v1";
@@ -43,6 +44,8 @@ pub enum FindingBundleError {
     EmptyField(&'static str),
     #[error("finding bundle field {field} has invalid SHA-256 digest: {sha256}")]
     InvalidSha256 { field: &'static str, sha256: String },
+    #[error("finding bundle manifest contains duplicate path: {0}")]
+    DuplicatePath(String),
 }
 
 pub fn parse_finding_bundle_manifest(
@@ -69,8 +72,37 @@ pub fn validate_finding_bundle_manifest(
     validate_optional_file_ref("replay_report", manifest.replay_report.as_ref())?;
     validate_optional_file_ref("oracle_report", manifest.oracle_report.as_ref())?;
     validate_optional_file_ref("kernel_report", manifest.kernel_report.as_ref())?;
+    validate_unique_paths(manifest)?;
     require_nonempty("classification", &manifest.classification)?;
     require_nonempty("signature", &manifest.signature)?;
+    Ok(())
+}
+
+fn validate_unique_paths(manifest: &FindingBundleManifest) -> Result<(), FindingBundleError> {
+    let mut paths = HashSet::new();
+    record_path(&mut paths, &manifest.artifact.path)?;
+    record_path(&mut paths, &manifest.sidecar.path)?;
+    record_optional_path(&mut paths, manifest.stdout.as_ref())?;
+    record_optional_path(&mut paths, manifest.stderr.as_ref())?;
+    record_optional_path(&mut paths, manifest.replay_report.as_ref())?;
+    record_optional_path(&mut paths, manifest.oracle_report.as_ref())?;
+    record_optional_path(&mut paths, manifest.kernel_report.as_ref())
+}
+
+fn record_optional_path<'a>(
+    paths: &mut HashSet<&'a str>,
+    file_ref: Option<&'a BundleFileRef>,
+) -> Result<(), FindingBundleError> {
+    if let Some(file_ref) = file_ref {
+        record_path(paths, &file_ref.path)?;
+    }
+    Ok(())
+}
+
+fn record_path<'a>(paths: &mut HashSet<&'a str>, path: &'a str) -> Result<(), FindingBundleError> {
+    if !paths.insert(path) {
+        return Err(FindingBundleError::DuplicatePath(path.to_string()));
+    }
     Ok(())
 }
 
@@ -221,6 +253,22 @@ mod tests {
         assert!(matches!(
             error,
             FindingBundleError::EmptyField("replay_report.path")
+        ));
+    }
+
+    #[test]
+    fn finding_bundle_manifest_rejects_duplicate_paths() {
+        let manifest = VALID_MANIFEST.replace(
+            r#""path": "fuzz_seed_iter42.stderr.txt""#,
+            r#""path": "fuzz_seed_iter42.stdout.txt""#,
+        );
+
+        let error = parse_finding_bundle_manifest(&manifest).unwrap_err();
+
+        assert!(matches!(
+            error,
+            FindingBundleError::DuplicatePath(path)
+                if path == "fuzz_seed_iter42.stdout.txt"
         ));
     }
 }

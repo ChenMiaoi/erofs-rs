@@ -275,6 +275,8 @@ any replay, oracle, or kernel reports together. The Rust library validates a
 `bundle.json` manifest with the stable `erofs-rs.finding-bundle.v1` schema so a
 bundle can identify the artifact SHA-256, matching sidecar, optional report
 files, classification, and signature without relying on directory names.
+Manifest parsing rejects duplicate paths so each bundle role points at a
+distinct attachment.
 `bundle` creates this manifest from a validated fuzz sidecar, verifies the
 artifact SHA-256, includes captured stdout/stderr when the sidecar records
 them, and hashes any optional replay, oracle, or kernel report paths supplied
