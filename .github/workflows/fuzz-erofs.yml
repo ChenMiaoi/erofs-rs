@@ -98,6 +98,24 @@ jobs:
             --output-dir corpus/artifacts/ \
             --report corpus/artifacts/report.txt
 
+      - name: Run CLI triage bucket smoke
+        run: |
+          mkdir -p corpus/triage
+          for seed in 1001 1002; do
+            out_dir="corpus/triage/fuzz-${seed}"
+            ./target/release/erofs-rs fuzz \
+              --input-dir corpus/seeds \
+              --output-dir "$out_dir" \
+              --max-time 5 \
+              --seed "$seed" \
+              --fsck build/erofs-utils/fsck/fsck.erofs \
+              --no-tui
+          done
+          ./target/release/erofs-rs triage \
+            --bucket-report corpus/triage/fuzz-1001/fuzz-buckets.json \
+            --bucket-report corpus/triage/fuzz-1002/fuzz-buckets.json \
+            --output corpus/triage/bucket-db.json
+
       - name: Run erofs-utils safety smoke
         run: |
           ARTIFACT_DIRS="corpus/mutated corpus/artifacts" \
@@ -264,6 +282,7 @@ jobs:
             corpus/rust-fuzz/
             corpus/rust-fuzz/cmin-summary.json
             corpus/seeds/matrix/manifest.json
+            corpus/triage/
             corpus/erofs-utils-safety/
             corpus/erofs-utils-safety-sanitized/
             corpus/mutated/*/manifest.txt

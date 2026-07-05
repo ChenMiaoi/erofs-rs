@@ -343,6 +343,10 @@ cmin-summary schemas, empty command flag lists, duplicate targets, mismatched
 aggregate counts, and target summaries where `cmin` increased the unit count.
 It also rejects target names or corpus, artifact, and log paths that do not
 match the weekly `corpus/rust-fuzz/<target>/` layout.
+The same periodic workflow runs two short deterministic `erofs-rs fuzz`
+campaigns, merges their `fuzz-buckets.json` reports with `erofs-rs triage`,
+and uploads the resulting `erofs-rs.bucket-db.v1` database under
+`corpus/triage/`.
 
 ### Seed matrix generation
 
