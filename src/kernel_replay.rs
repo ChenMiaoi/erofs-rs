@@ -351,6 +351,8 @@ fn write_report(path: &Path, report: &KernelReplayReport) -> Result<()> {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
+    validate_kernel_replay_report(report)
+        .map_err(|error| anyhow::anyhow!("generated kernel replay report is invalid: {error}"))?;
     let json =
         serde_json::to_string_pretty(report).context("failed to serialize kernel replay report")?;
     fs::write(path, format!("{json}\n"))
