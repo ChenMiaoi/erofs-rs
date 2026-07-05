@@ -16,6 +16,7 @@ pub struct ExecLimits {
     pub timeout: Duration,
     pub max_output_bytes: usize,
     pub kill_process_group: bool,
+    pub rss_limit_mb: Option<u64>,
 }
 
 impl Default for ExecLimits {
@@ -24,6 +25,7 @@ impl Default for ExecLimits {
             timeout: Duration::from_secs(DEFAULT_FSCK_TIMEOUT_SECS),
             max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
             kill_process_group: true,
+            rss_limit_mb: None,
         }
     }
 }
@@ -35,6 +37,7 @@ pub struct FsckResult {
     pub signal: Option<i32>,
     pub timed_out: bool,
     pub killed_process_group: bool,
+    pub rss_limit_mb: Option<u64>,
     pub stdout: String,
     pub stderr: String,
     pub stdout_truncated: bool,
@@ -92,6 +95,7 @@ pub fn run_fsck_with_limits<A: AsRef<Path>, B: AsRef<Path>>(
         .stdout(Stdio::from(child_stdout))
         .stderr(Stdio::from(child_stderr));
     configure_process_group(&mut cmd, limits.kill_process_group);
+    configure_memory_limit(&mut cmd, limits.rss_limit_mb)?;
 
     let mut child = cmd.spawn().with_context(|| {
         format!(
@@ -164,6 +168,7 @@ pub fn run_fsck_with_limits<A: AsRef<Path>, B: AsRef<Path>>(
         signal,
         timed_out,
         killed_process_group,
+        rss_limit_mb: limits.rss_limit_mb,
         stdout,
         stderr,
         stdout_truncated,
@@ -234,6 +239,41 @@ fn configure_process_group(cmd: &mut Command, enabled: bool) {
 
 #[cfg(not(unix))]
 fn configure_process_group(_cmd: &mut Command, _enabled: bool) {}
+
+#[cfg(unix)]
+fn configure_memory_limit(cmd: &mut Command, rss_limit_mb: Option<u64>) -> Result<()> {
+    let Some(rss_limit_mb) = rss_limit_mb else {
+        return Ok(());
+    };
+    use std::io;
+    use std::os::unix::process::CommandExt;
+
+    let bytes = rss_limit_mb
+        .checked_mul(1024 * 1024)
+        .ok_or_else(|| anyhow::anyhow!("rss limit {rss_limit_mb} MiB overflows"))?;
+    let limit = libc::rlim_t::try_from(bytes)
+        .map_err(|_| anyhow::anyhow!("rss limit {rss_limit_mb} MiB does not fit rlim_t"))?;
+    // pre_exec runs in the child after fork and before exec. Keep the closure
+    // async-signal-safe and only call setrlimit with copied integer values.
+    unsafe {
+        cmd.pre_exec(move || {
+            let rlimit = libc::rlimit {
+                rlim_cur: limit,
+                rlim_max: limit,
+            };
+            if libc::setrlimit(libc::RLIMIT_AS, &rlimit) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn configure_memory_limit(_cmd: &mut Command, _rss_limit_mb: Option<u64>) -> Result<()> {
+    Ok(())
+}
 
 #[cfg(unix)]
 fn kill_timed_out_child(child: &mut Child, kill_process_group: bool) -> bool {

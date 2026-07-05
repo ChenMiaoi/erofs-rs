@@ -203,6 +203,7 @@ fn test_fsck_timeout_kills_process_group() {
             timeout: Duration::from_millis(200),
             max_output_bytes: 1024,
             kill_process_group: true,
+            rss_limit_mb: None,
         },
     )
     .unwrap();
@@ -230,6 +231,32 @@ fn test_fsck_timeout_kills_process_group() {
         .arg(&child_pid)
         .status();
     panic!("fsck child process {child_pid} survived process-group timeout kill");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn test_fsck_rss_limit_sets_address_space_limit() {
+    let tmp = TempDir::new().unwrap();
+    let script = tmp.path().join("print-limit-fsck.sh");
+    fs::write(&script, "ulimit -v\n").unwrap();
+
+    let extra_args = vec![script.to_string_lossy().to_string()];
+    let result = run_fsck_with_limits(
+        "/bin/sh",
+        fixture("single.erofs"),
+        &extra_args,
+        ExecLimits {
+            timeout: Duration::from_secs(1),
+            max_output_bytes: 1024,
+            kill_process_group: true,
+            rss_limit_mb: Some(64),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.classification, "accepted");
+    assert_eq!(result.rss_limit_mb, Some(64));
+    assert_eq!(result.stdout.trim(), "65536");
 }
 
 #[test]

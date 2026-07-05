@@ -126,6 +126,11 @@ pub struct FuzzArgs {
         help = "Do not kill the fsck process group when an execution times out"
     )]
     pub no_kill_process_group: bool,
+    #[arg(
+        long,
+        help = "Address-space limit in MiB for each fsck execution on Unix"
+    )]
+    pub rss_limit_mb: Option<u64>,
 }
 
 #[derive(Parser, Debug)]

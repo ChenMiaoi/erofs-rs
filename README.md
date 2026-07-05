@@ -146,6 +146,7 @@ erofs-rs fuzz \
     --max-time 60 \
     --exec-timeout 30 \
     --max-output-bytes 1048576 \
+    --rss-limit-mb 512 \
     --seed 12345 \
     --fsck build/erofs-utils/fsck/fsck.erofs
 ```
@@ -161,7 +162,8 @@ state, and output truncation flags. `--exec-timeout` controls the per-artifact
 fsck timeout, and `--max-output-bytes` caps the retained bytes for each fsck
 output stream. On Unix, timed-out fsck executions run in a dedicated process
 group and the whole group is killed by default; use `--no-kill-process-group`
-only when debugging process lifetime issues manually.
+only when debugging process lifetime issues manually. `--rss-limit-mb` applies
+a per-execution address-space limit on Unix.
 
 When stdout is an interactive terminal, `fuzz` opens a post-run TUI dashboard
 with the RNG seed, campaign totals, actionable finding count, classification
