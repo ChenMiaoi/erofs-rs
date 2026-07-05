@@ -51,6 +51,14 @@ pub struct ReplayFsckOutcome {
     pub timed_out: bool,
     pub killed_process_group: bool,
     pub rss_limit_mb: Option<u64>,
+    #[serde(default)]
+    pub peak_rss_kb: Option<u64>,
+    #[serde(default)]
+    pub cgroup_v2: bool,
+    #[serde(default)]
+    pub cgroup_oom_delta: Option<u64>,
+    #[serde(default)]
+    pub cgroup_oom_kill_delta: Option<u64>,
     pub stdout_truncated: bool,
     pub stderr_truncated: bool,
 }
@@ -298,6 +306,16 @@ fn render_report(
         format!("timed_out: {}", result.timed_out),
         format!("killed_process_group: {}", result.killed_process_group),
         format!("rss_limit_mb: {}", optional_u64(result.rss_limit_mb)),
+        format!("peak_rss_kb: {}", optional_u64(result.peak_rss_kb)),
+        format!("cgroup_v2: {}", result.cgroup_v2),
+        format!(
+            "cgroup_oom_delta: {}",
+            optional_u64(result.cgroup_oom_delta)
+        ),
+        format!(
+            "cgroup_oom_kill_delta: {}",
+            optional_u64(result.cgroup_oom_kill_delta)
+        ),
         format!("stdout_truncated: {}", result.stdout_truncated),
         format!("stderr_truncated: {}", result.stderr_truncated),
         String::new(),
@@ -358,6 +376,10 @@ fn build_replay_report(
             timed_out: result.timed_out,
             killed_process_group: result.killed_process_group,
             rss_limit_mb: result.rss_limit_mb,
+            peak_rss_kb: result.peak_rss_kb,
+            cgroup_v2: result.cgroup_v2,
+            cgroup_oom_delta: result.cgroup_oom_delta,
+            cgroup_oom_kill_delta: result.cgroup_oom_kill_delta,
             stdout_truncated: result.stdout_truncated,
             stderr_truncated: result.stderr_truncated,
         },
@@ -493,6 +515,10 @@ mod tests {
             fsck_kill_process_group: true,
             fsck_killed_process_group: false,
             fsck_rss_limit_mb: None,
+            fsck_peak_rss_kb: None,
+            fsck_cgroup_v2: false,
+            fsck_cgroup_oom_delta: None,
+            fsck_cgroup_oom_kill_delta: None,
             stdout_truncated: false,
             stderr_truncated: false,
             classification: classification.to_string(),

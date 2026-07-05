@@ -213,7 +213,9 @@ flags, and one entry per target with:
 - aggregate before, after, removed, and artifact counts,
 - crash artifact counts,
 - corpus and artifact directories,
-- run, cmin, and `-runs=0` regression log paths.
+- reviewed minimized corpus replay counts,
+- run, cmin, generated-corpus regression, and reviewed-corpus regression log
+  paths.
 
 Use this report with `coverage-manifest.json` to review whether a minimized
 unit should be imported into `corpus/seeds/minimized/<target>/`. The Rust
@@ -222,6 +224,12 @@ validator can be run with:
 ```bash
 erofs-rs cmin-summary --report corpus/rust-fuzz/cmin-summary.json
 ```
+
+The weekly workflow also validates `corpus/seeds/minimized/manifest.json` and
+replays each non-empty `corpus/seeds/minimized/<target>/` directory with
+`-runs=0` before running that target's new fuzzing campaign. Those reviewed
+replay counts and logs make committed minimized units part of the same
+regression loop as freshly minimized campaign output.
 
 It rejects unknown schemas, empty required fields or flag lists, duplicate
 targets, and summaries where a target has more corpus units after `cmin` than
@@ -244,11 +252,12 @@ layout.
 The sidecar is the source of truth for reproduction. It records the RNG seed,
 iteration, strategy, seed and artifact SHA-256 digests, mutation records,
 commands, tool versions, git revisions, fsck status, timeout state, truncation
-state, classification, reason, and signature. The Rust library parser rejects
-unknown sidecar schemas, unknown fields, malformed SHA-256 digests, empty
-required fields, empty command vectors, empty command arguments, and empty
-optional version or mutation string fields. It also rejects signatures that do
-not match the recorded classification prefix.
+state, process-group state, RSS limit, peak RSS, cgroup v2 OOM deltas,
+classification, reason, and signature. The Rust library parser rejects unknown
+sidecar schemas, unknown fields, malformed SHA-256 digests, empty required
+fields, empty command vectors, empty command arguments, and empty optional
+version or mutation string fields. It also rejects signatures that do not match
+the recorded classification prefix.
 
 Campaign-level files:
 

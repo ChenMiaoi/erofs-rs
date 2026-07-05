@@ -77,6 +77,14 @@ pub struct FuzzArtifactSidecar {
     pub fsck_kill_process_group: bool,
     pub fsck_killed_process_group: bool,
     pub fsck_rss_limit_mb: Option<u64>,
+    #[serde(default)]
+    pub fsck_peak_rss_kb: Option<u64>,
+    #[serde(default)]
+    pub fsck_cgroup_v2: bool,
+    #[serde(default)]
+    pub fsck_cgroup_oom_delta: Option<u64>,
+    #[serde(default)]
+    pub fsck_cgroup_oom_kill_delta: Option<u64>,
     pub stdout_truncated: bool,
     pub stderr_truncated: bool,
     pub classification: String,
@@ -288,6 +296,7 @@ impl OutcomeKind {
                 Self::InterestingSemantic
             }
             "rejected_timeout" => Self::UnsafeTimeout,
+            "rejected_oom" => Self::UnsafeCrash,
             classification
                 if classification.contains("crash")
                     || classification.contains("signal")
@@ -705,6 +714,10 @@ struct FuzzSidecarInput<'a> {
     fsck_kill_process_group: bool,
     fsck_killed_process_group: bool,
     fsck_rss_limit_mb: Option<u64>,
+    fsck_peak_rss_kb: Option<u64>,
+    fsck_cgroup_v2: bool,
+    fsck_cgroup_oom_delta: Option<u64>,
+    fsck_cgroup_oom_kill_delta: Option<u64>,
     stdout_truncated: bool,
     stderr_truncated: bool,
     classification: &'a str,
@@ -738,6 +751,10 @@ fn build_fuzz_sidecar(input: FuzzSidecarInput<'_>) -> FuzzArtifactSidecar {
         fsck_kill_process_group: input.fsck_kill_process_group,
         fsck_killed_process_group: input.fsck_killed_process_group,
         fsck_rss_limit_mb: input.fsck_rss_limit_mb,
+        fsck_peak_rss_kb: input.fsck_peak_rss_kb,
+        fsck_cgroup_v2: input.fsck_cgroup_v2,
+        fsck_cgroup_oom_delta: input.fsck_cgroup_oom_delta,
+        fsck_cgroup_oom_kill_delta: input.fsck_cgroup_oom_kill_delta,
         stdout_truncated: input.stdout_truncated,
         stderr_truncated: input.stderr_truncated,
         classification: input.classification.to_string(),
@@ -1033,6 +1050,10 @@ fn run_mutation_fuzz(args: &FuzzArgs) -> Result<()> {
             fsck_kill_process_group: fsck_limits.kill_process_group,
             fsck_killed_process_group: result.killed_process_group,
             fsck_rss_limit_mb: result.rss_limit_mb,
+            fsck_peak_rss_kb: result.peak_rss_kb,
+            fsck_cgroup_v2: result.cgroup_v2,
+            fsck_cgroup_oom_delta: result.cgroup_oom_delta,
+            fsck_cgroup_oom_kill_delta: result.cgroup_oom_kill_delta,
             stdout_truncated: result.stdout_truncated,
             stderr_truncated: result.stderr_truncated,
             classification: &classification,
@@ -1173,6 +1194,10 @@ mod tests {
             fsck_kill_process_group: true,
             fsck_killed_process_group: false,
             fsck_rss_limit_mb: Some(64),
+            fsck_peak_rss_kb: Some(2048),
+            fsck_cgroup_v2: true,
+            fsck_cgroup_oom_delta: Some(1),
+            fsck_cgroup_oom_kill_delta: Some(1),
             stdout_truncated: false,
             stderr_truncated: true,
             classification: "rejected_invalid",
@@ -1235,6 +1260,10 @@ mod tests {
             fsck_kill_process_group: true,
             fsck_killed_process_group: false,
             fsck_rss_limit_mb: Some(64),
+            fsck_peak_rss_kb: Some(2048),
+            fsck_cgroup_v2: true,
+            fsck_cgroup_oom_delta: Some(1),
+            fsck_cgroup_oom_kill_delta: Some(1),
             stdout_truncated: false,
             stderr_truncated: true,
             classification: "rejected_invalid",
@@ -1255,6 +1284,10 @@ mod tests {
         assert!(decoded.fsck_kill_process_group);
         assert!(!decoded.fsck_killed_process_group);
         assert_eq!(decoded.fsck_rss_limit_mb, Some(64));
+        assert_eq!(decoded.fsck_peak_rss_kb, Some(2048));
+        assert!(decoded.fsck_cgroup_v2);
+        assert_eq!(decoded.fsck_cgroup_oom_delta, Some(1));
+        assert_eq!(decoded.fsck_cgroup_oom_kill_delta, Some(1));
         assert!(decoded.stderr_truncated);
         assert_eq!(decoded.signature, "rejected_invalid: bad inode");
         assert_eq!(decoded.mutations[0].old.as_deref(), Some("0x00"));
@@ -1410,6 +1443,10 @@ mod tests {
         assert_eq!(
             OutcomeKind::from_classification("rejected_timeout"),
             OutcomeKind::UnsafeTimeout
+        );
+        assert_eq!(
+            OutcomeKind::from_classification("rejected_oom"),
+            OutcomeKind::UnsafeCrash
         );
         assert_eq!(
             OutcomeKind::from_classification("sanitizer_crash"),

@@ -25,6 +25,8 @@ const KNOWN_RESULTS: &[&str] = &[
     "rejected_invalid",
     "rejected_other",
     "rejected_timeout",
+    "rejected_oom",
+    "rejected_signal",
     "rejected_crash",
     "sanitizer_crash",
 ];
@@ -435,6 +437,8 @@ pub struct CminSummaryReport {
     pub total_removed_units: Option<usize>,
     #[serde(default)]
     pub total_artifact_count: Option<usize>,
+    #[serde(default)]
+    pub total_reviewed_corpus_units: Option<usize>,
     pub targets: Vec<CminTargetSummary>,
 }
 
@@ -447,9 +451,15 @@ pub struct CminTargetSummary {
     pub before_cmin_units: usize,
     pub after_cmin_units: usize,
     pub artifact_count: usize,
+    #[serde(default)]
+    pub reviewed_corpus_dir: Option<String>,
+    #[serde(default)]
+    pub reviewed_corpus_units: Option<usize>,
     pub run_log: String,
     pub cmin_log: String,
     pub regression_log: String,
+    #[serde(default)]
+    pub reviewed_regression_log: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -548,12 +558,20 @@ pub fn validate_cmin_summary_report(
         "total_artifact_count",
         report.targets.iter().map(|target| target.artifact_count),
     )?;
+    let total_reviewed = cmin_count_sum(
+        "total_reviewed_corpus_units",
+        report
+            .targets
+            .iter()
+            .map(|target| target.reviewed_corpus_units.unwrap_or(0)),
+    )?;
     validate_cmin_optional_totals(
         report,
         total_before,
         total_after,
         total_removed,
         total_artifacts,
+        total_reviewed,
     )?;
 
     Ok(())
@@ -597,6 +615,41 @@ fn validate_cmin_target(target: &CminTargetSummary) -> std::result::Result<(), C
         &target.regression_log,
         cmin_target_path(&target.target, "regression.log"),
     )?;
+    if let Some(reviewed_corpus_dir) = &target.reviewed_corpus_dir {
+        require_cmin_nonempty("targets.reviewed_corpus_dir", reviewed_corpus_dir)?;
+        require_cmin_path(
+            "targets.reviewed_corpus_dir",
+            &target.target,
+            reviewed_corpus_dir,
+            minimized_target_path(&target.target),
+        )?;
+    }
+    if let Some(reviewed_regression_log) = &target.reviewed_regression_log {
+        require_cmin_nonempty("targets.reviewed_regression_log", reviewed_regression_log)?;
+        require_cmin_path(
+            "targets.reviewed_regression_log",
+            &target.target,
+            reviewed_regression_log,
+            cmin_target_path(&target.target, "reviewed-regression.log"),
+        )?;
+    }
+    if (target.reviewed_corpus_dir.is_some() || target.reviewed_regression_log.is_some())
+        && target.reviewed_corpus_units.is_none()
+    {
+        return Err(CminSummaryError::MissingCount(
+            "targets.reviewed_corpus_units",
+        ));
+    }
+    if target.reviewed_corpus_units.unwrap_or(0) > 0 {
+        if target.reviewed_corpus_dir.is_none() {
+            return Err(CminSummaryError::EmptyField("targets.reviewed_corpus_dir"));
+        }
+        if target.reviewed_regression_log.is_none() {
+            return Err(CminSummaryError::EmptyField(
+                "targets.reviewed_regression_log",
+            ));
+        }
+    }
 
     if target.after_cmin_units > target.before_cmin_units {
         return Err(CminSummaryError::CminIncreased {
@@ -643,13 +696,22 @@ fn cmin_target_path(target: &str, leaf: &str) -> String {
     portable_path(&Path::new(RUST_FUZZ_CORPUS_ROOT).join(target).join(leaf))
 }
 
+fn minimized_target_path(target: &str) -> String {
+    portable_path(&Path::new(MINIMIZED_IMPORT_ROOT).join(target))
+}
+
 fn validate_cmin_optional_totals(
     report: &CminSummaryReport,
     total_before: usize,
     total_after: usize,
     total_removed: usize,
     total_artifacts: usize,
+    total_reviewed: usize,
 ) -> std::result::Result<(), CminSummaryError> {
+    if let Some(actual) = report.total_reviewed_corpus_units {
+        require_cmin_count("total_reviewed_corpus_units", total_reviewed, actual)?;
+    }
+
     let totals_present = report.total_before_cmin_units.is_some()
         || report.total_after_cmin_units.is_some()
         || report.total_removed_units.is_some()
@@ -820,7 +882,8 @@ fn lifecycle_bucket(category: &str) -> &'static str {
         "rejected_invalid" => "rejects/invalid",
         "rejected_io_error" | "rejected_other" => "rejects/other",
         "rejected_timeout" => "timeouts/userspace",
-        "rejected_crash" => "crashes/userspace",
+        "rejected_oom" => "crashes/oom",
+        "rejected_signal" | "rejected_crash" => "crashes/userspace",
         _ if category.contains("sanitizer") => "crashes/sanitizer",
         _ if category.contains("kernel") && category.contains("timeout") => "timeouts/kernel",
         _ if category.contains("kernel") => "crashes/kernel",
@@ -1286,7 +1349,8 @@ fn write_report(path: &Path, summary: &CorpusSummary, records: &[ArtifactRecord]
         "- `accepted_with_errors`: fsck exited 0 but printed errors (rare).".to_string(),
         "- `rejected_io_error` / `rejected_corruption` / `rejected_invalid`: clean rejection paths.".to_string(),
         "- `rejected_timeout`: fsck exceeded the configured timeout.".to_string(),
-        "- `rejected_crash`: fsck terminated because of a fatal signal.".to_string(),
+        "- `rejected_oom`: fsck exhausted memory or triggered cgroup OOM accounting.".to_string(),
+        "- `rejected_signal` / `rejected_crash`: fsck terminated because of a signal.".to_string(),
         "- Lifecycle buckets map artifacts into queue, rejects, crashes, and timeouts for triage.".to_string(),
         String::new(),
         "## All Collected Artifacts".to_string(),
@@ -1418,6 +1482,8 @@ mod tests {
         assert_eq!(lifecycle_bucket("rejected_invalid"), "rejects/invalid");
         assert_eq!(lifecycle_bucket("rejected_io_error"), "rejects/other");
         assert_eq!(lifecycle_bucket("rejected_timeout"), "timeouts/userspace");
+        assert_eq!(lifecycle_bucket("rejected_oom"), "crashes/oom");
+        assert_eq!(lifecycle_bucket("rejected_signal"), "crashes/userspace");
         assert_eq!(lifecycle_bucket("rejected_crash"), "crashes/userspace");
         assert_eq!(lifecycle_bucket("sanitizer_crash"), "crashes/sanitizer");
         assert_eq!(lifecycle_bucket("asan_sanitizer"), "crashes/sanitizer");
@@ -1779,6 +1845,7 @@ mod tests {
   "total_after_cmin_units": 2,
   "total_removed_units": 1,
   "total_artifact_count": 1,
+  "total_reviewed_corpus_units": 1,
   "targets": [
     {
       "target": "superblock_parse",
@@ -1787,9 +1854,12 @@ mod tests {
       "before_cmin_units": 3,
       "after_cmin_units": 2,
       "artifact_count": 1,
+      "reviewed_corpus_dir": "corpus/seeds/minimized/superblock_parse",
+      "reviewed_corpus_units": 1,
       "run_log": "corpus/rust-fuzz/superblock_parse/run.log",
       "cmin_log": "corpus/rust-fuzz/superblock_parse/cmin.log",
-      "regression_log": "corpus/rust-fuzz/superblock_parse/regression.log"
+      "regression_log": "corpus/rust-fuzz/superblock_parse/regression.log",
+      "reviewed_regression_log": "corpus/rust-fuzz/superblock_parse/reviewed-regression.log"
     }
   ]
 }"#;
@@ -1802,6 +1872,8 @@ mod tests {
         assert_eq!(report.engine, "cargo-fuzz");
         assert_eq!(report.total_before_cmin_units, Some(3));
         assert_eq!(report.total_removed_units, Some(1));
+        assert_eq!(report.total_reviewed_corpus_units, Some(1));
+        assert_eq!(report.targets[0].reviewed_corpus_units, Some(1));
         assert_eq!(report.targets[0].target, "superblock_parse");
     }
 
@@ -1837,12 +1909,17 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("total_artifact_count");
+        report
+            .as_object_mut()
+            .unwrap()
+            .remove("total_reviewed_corpus_units");
         let report = serde_json::to_string(&report).unwrap();
 
         let report = parse_cmin_summary_report(&report).unwrap();
 
         assert_eq!(report.total_before_cmin_units, None);
         assert_eq!(report.total_removed_units, None);
+        assert_eq!(report.total_reviewed_corpus_units, None);
     }
 
     #[test]

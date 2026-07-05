@@ -17,7 +17,7 @@ jobs:
   userspace-fuzzing:
     name: Userspace structured and libFuzzer campaign
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -67,6 +67,25 @@ jobs:
       - name: Build erofs-rs CLI
         run: cargo build --locked --release
 
+      - name: Set fuzz campaign budgets
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "EROFS_CLI_FUZZ_SECONDS=60" >> "$GITHUB_ENV"
+            echo "EROFS_UPSTREAM_FUZZ_SECONDS=600" >> "$GITHUB_ENV"
+            echo "EROFS_RUST_FUZZ_SECONDS=120" >> "$GITHUB_ENV"
+            echo "EROFS_RUST_CMIN_SECONDS=60" >> "$GITHUB_ENV"
+          else
+            echo "EROFS_CLI_FUZZ_SECONDS=15" >> "$GITHUB_ENV"
+            echo "EROFS_UPSTREAM_FUZZ_SECONDS=120" >> "$GITHUB_ENV"
+            echo "EROFS_RUST_FUZZ_SECONDS=45" >> "$GITHUB_ENV"
+            echo "EROFS_RUST_CMIN_SECONDS=30" >> "$GITHUB_ENV"
+          fi
+
+      - name: Validate reviewed minimized corpus
+        run: |
+          ./target/release/erofs-rs minimized-check \
+            --manifest corpus/seeds/minimized/manifest.json
+
       - name: Run structured mutations (raw checksum barrier)
         run: |
           targets=(
@@ -78,6 +97,7 @@ jobs:
             compression
             fragment
             device
+            grammar
             cross
           )
           for target in "${targets[@]}"; do
@@ -106,7 +126,7 @@ jobs:
             ./target/release/erofs-rs fuzz \
               --input-dir corpus/seeds \
               --output-dir "$out_dir" \
-              --max-time 5 \
+              --max-time "$EROFS_CLI_FUZZ_SECONDS" \
               --seed "$seed" \
               --fsck build/erofs-utils/fsck/fsck.erofs \
               --no-tui
@@ -130,7 +150,7 @@ jobs:
           mkdir -p corpus/fuzz-out
           ./build/erofs-utils-fuzz/fsck/fuzz_erofsfsck \
             corpus/seeds/ corpus/fuzz-out/ \
-            -max_total_time=120 -print_final_stats=1 \
+            -max_total_time="$EROFS_UPSTREAM_FUZZ_SECONDS" -print_final_stats=1 \
             2>&1 | tee corpus/fuzz-out/fuzz.log
 
       - name: Run Rust libFuzzer campaign
@@ -160,14 +180,27 @@ jobs:
             corpus_dir="corpus/rust-fuzz/${target}/corpus"
             artifact_dir="corpus/rust-fuzz/${target}/artifacts"
             mkdir -p "$corpus_dir" "$artifact_dir"
+            reviewed_dir="corpus/seeds/minimized/${target}"
+            reviewed_units=0
+            reviewed_regression_log=""
+            if [ -d "$reviewed_dir" ]; then
+              reviewed_units="$(find "$reviewed_dir" -type f | wc -l | tr -d '[:space:]')"
+              if [ "$reviewed_units" -gt 0 ]; then
+                reviewed_regression_log="corpus/rust-fuzz/${target}/reviewed-regression.log"
+                cargo +nightly fuzz run "$target" "$reviewed_dir" -- \
+                  -runs=0 \
+                  -artifact_prefix="${artifact_dir}/" \
+                  2>&1 | tee "$reviewed_regression_log"
+              fi
+            fi
             cargo +nightly fuzz run "$target" "$corpus_dir" -- \
-              -max_total_time=30 \
+              -max_total_time="$EROFS_RUST_FUZZ_SECONDS" \
               -artifact_prefix="${artifact_dir}/" \
               -print_final_stats=1 \
               2>&1 | tee "corpus/rust-fuzz/${target}/run.log"
             before_cmin_units="$(find "$corpus_dir" -type f | wc -l | tr -d '[:space:]')"
             cargo +nightly fuzz cmin "$target" "$corpus_dir" -- \
-              -max_total_time=30 \
+              -max_total_time="$EROFS_RUST_CMIN_SECONDS" \
               2>&1 | tee "corpus/rust-fuzz/${target}/cmin.log"
             after_cmin_units="$(find "$corpus_dir" -type f | wc -l | tr -d '[:space:]')"
             artifact_count="$(find "$artifact_dir" -type f | wc -l | tr -d '[:space:]')"
@@ -176,7 +209,8 @@ jobs:
               -artifact_prefix="${artifact_dir}/" \
               2>&1 | tee "corpus/rust-fuzz/${target}/regression.log"
             python3 - "$cmin_jsonl" "$target" "$before_cmin_units" \
-              "$after_cmin_units" "$artifact_count" "$corpus_dir" "$artifact_dir" <<'PY'
+              "$after_cmin_units" "$artifact_count" "$corpus_dir" "$artifact_dir" \
+              "$reviewed_dir" "$reviewed_units" "$reviewed_regression_log" <<'PY'
           import json
           import sys
 
@@ -188,6 +222,9 @@ jobs:
               artifact_count,
               corpus_dir,
               artifact_dir,
+              reviewed_dir,
+              reviewed_units,
+              reviewed_regression_log,
           ) = sys.argv[1:]
           entry = {
               "target": target,
@@ -196,10 +233,14 @@ jobs:
               "before_cmin_units": int(before_cmin_units),
               "after_cmin_units": int(after_cmin_units),
               "artifact_count": int(artifact_count),
+              "reviewed_corpus_units": int(reviewed_units),
               "run_log": f"corpus/rust-fuzz/{target}/run.log",
               "cmin_log": f"corpus/rust-fuzz/{target}/cmin.log",
               "regression_log": f"corpus/rust-fuzz/{target}/regression.log",
           }
+          if int(reviewed_units) > 0:
+              entry["reviewed_corpus_dir"] = reviewed_dir
+              entry["reviewed_regression_log"] = reviewed_regression_log
           with open(output, "a", encoding="utf-8") as handle:
               handle.write(json.dumps(entry, sort_keys=True) + "\n")
           PY
@@ -207,6 +248,7 @@ jobs:
           python3 - "$cmin_jsonl" "$cmin_summary" \
             "$cargo_fuzz_version" "$rustc_version" <<'PY'
           import json
+          import os
           import sys
           from pathlib import Path
 
@@ -219,17 +261,20 @@ jobs:
           total_before = sum(entry["before_cmin_units"] for entry in entries)
           total_after = sum(entry["after_cmin_units"] for entry in entries)
           total_artifacts = sum(entry["artifact_count"] for entry in entries)
+          total_reviewed = sum(entry["reviewed_corpus_units"] for entry in entries)
+          rust_fuzz_seconds = os.environ["EROFS_RUST_FUZZ_SECONDS"]
+          rust_cmin_seconds = os.environ["EROFS_RUST_CMIN_SECONDS"]
           report = {
               "schema": "erofs-rs.cmin-summary.v1",
               "engine": "cargo-fuzz",
               "engine_version": cargo_fuzz_version,
               "toolchain": rustc_version,
               "run_flags": [
-                  "-max_total_time=30",
+                  f"-max_total_time={rust_fuzz_seconds}",
                   "-artifact_prefix=<target-artifact-dir>/",
                   "-print_final_stats=1",
               ],
-              "cmin_flags": ["-max_total_time=30"],
+              "cmin_flags": [f"-max_total_time={rust_cmin_seconds}"],
               "regression_flags": [
                   "-runs=0",
                   "-artifact_prefix=<target-artifact-dir>/",
@@ -238,6 +283,7 @@ jobs:
               "total_after_cmin_units": total_after,
               "total_removed_units": total_before - total_after,
               "total_artifact_count": total_artifacts,
+              "total_reviewed_corpus_units": total_reviewed,
               "targets": entries,
           }
           with open(output, "w", encoding="utf-8") as handle:
@@ -269,6 +315,46 @@ jobs:
           TOOL_TIMEOUT=15s \
           MAX_IMAGES=100 \
             ./scripts/erofs-utils-safety-smoke.sh
+
+      - name: Write fuzz campaign summary
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from collections import Counter
+          from pathlib import Path
+
+          lines = ["## EROFS fuzz campaign", ""]
+
+          cmin_path = Path("corpus/rust-fuzz/cmin-summary.json")
+          if cmin_path.exists():
+              cmin = json.loads(cmin_path.read_text(encoding="utf-8"))
+              lines.extend([
+                  f"- Rust fuzz run budget: {', '.join(cmin.get('run_flags', []))}",
+                  f"- Rust cmin budget: {', '.join(cmin.get('cmin_flags', []))}",
+                  f"- Reviewed corpus units replayed: {cmin.get('total_reviewed_corpus_units', 0)}",
+                  f"- New minimized units after cmin: {cmin.get('total_after_cmin_units', 0)}",
+                  f"- Crash artifacts emitted: {cmin.get('total_artifact_count', 0)}",
+              ])
+          else:
+              lines.append("- Rust cmin summary was not produced.")
+
+          bucket_path = Path("corpus/triage/bucket-db.json")
+          if bucket_path.exists():
+              bucket_db = json.loads(bucket_path.read_text(encoding="utf-8"))
+              buckets = bucket_db.get("buckets", [])
+              by_kind = Counter(bucket.get("outcome_kind", "unknown") for bucket in buckets)
+              lines.append(f"- Actionable triage buckets: {len(buckets)}")
+              for kind, count in sorted(by_kind.items()):
+                  lines.append(f"  - {kind}: {count}")
+          else:
+              lines.append("- Triage bucket database was not produced.")
+
+          summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          with summary.open("a", encoding="utf-8") as handle:
+              handle.write("\n".join(lines) + "\n")
+          PY
 
       - name: Upload fuzzing artifacts
         uses: actions/upload-artifact@v4

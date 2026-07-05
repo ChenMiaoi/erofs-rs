@@ -228,10 +228,11 @@ Each unique `fuzz_*.erofs` artifact is written with a matching JSON sidecar and
 captured fsck output files. The sidecar records the tool version, RNG seed,
 iteration, strategy, seed and artifact SHA-256 digests, mutation records, fsck
 command, dump summary command, kernel replay command, git revisions when
-available, classification, exit status, timeout state, and output truncation
-flags. It also records a deterministic signature used by the text report and
-`fuzz-buckets.json` to bucket actionable findings by classification and first
-meaningful tool output line. Sidecars use the stable
+available, classification, exit status, timeout state, process-group state,
+RSS limit, observed peak RSS, cgroup v2 OOM counter deltas, and output
+truncation flags. It also records a deterministic signature used by the text
+report and `fuzz-buckets.json` to bucket actionable findings by classification
+and first meaningful tool output line. Sidecars use the stable
 `erofs-rs.fuzz-artifact.v1` schema; replay and bundle parsing rejects unknown
 fields, unknown schemas, malformed SHA-256 digests, empty required fields, and
 empty recorded command vectors before trusting reproduction metadata. It also
@@ -246,7 +247,10 @@ merge. `--exec-timeout` controls the per-artifact fsck timeout, and
 Unix, timed-out fsck executions run in a dedicated process group and the whole
 group is killed by default; use `--no-kill-process-group` only when debugging
 process lifetime issues manually. `--rss-limit-mb` applies a per-execution
-address-space limit on Unix.
+address-space limit on Unix. Fsck executions killed by cgroup OOM accounting,
+allocation failures, or memory-limited SIGKILL are classified as
+`rejected_oom`; other non-fatal termination signals are classified as
+`rejected_signal`.
 
 When stdout is an interactive terminal, `fuzz` opens a post-run TUI dashboard
 with the RNG seed, campaign totals, actionable finding count, classification
@@ -367,23 +371,27 @@ Generated libFuzzer corpora and artifacts under `fuzz/corpus/`,
 committed unless a minimized regression is intentionally added.
 The periodic fuzzing workflow runs `cargo fuzz cmin` for each target and then
 replays the minimized corpus with `-runs=0` before collecting it as a review
-artifact. It also uploads `corpus/rust-fuzz/cmin-summary.json`, a
-machine-readable `erofs-rs.cmin-summary.v1` report with cargo-fuzz version,
-nightly rustc version, engine flags, per-target corpus counts before and after
-minimization, aggregate before/after/removed counts, artifact counts, and log
-paths. Use `erofs-rs cmin-summary --report ...` to validate this report before
-later automation consumes it. The Rust validator rejects unknown
-cmin-summary schemas, empty command flag lists, duplicate targets, mismatched
-aggregate counts, and target summaries where `cmin` increased the unit count.
-It also rejects target names or corpus, artifact, and log paths that do not
-match the weekly `corpus/rust-fuzz/<target>/` layout.
+artifact. It also validates the committed
+`corpus/seeds/minimized/manifest.json` and replays each non-empty reviewed
+target directory before the corresponding weekly libFuzzer target runs. The
+workflow uploads `corpus/rust-fuzz/cmin-summary.json`, a machine-readable
+`erofs-rs.cmin-summary.v1` report with cargo-fuzz version, nightly rustc
+version, engine flags, per-target corpus counts before and after minimization,
+reviewed-corpus replay counts, aggregate before/after/removed counts, artifact
+counts, and log paths. Use `erofs-rs cmin-summary --report ...` to validate
+this report before later automation consumes it. The Rust validator rejects
+unknown cmin-summary schemas, empty command flag lists, duplicate targets,
+mismatched aggregate counts, and target summaries where `cmin` increased the
+unit count. It also rejects target names or corpus, reviewed corpus, artifact,
+and log paths that do not match the weekly corpus layouts.
 Reviewed units from that artifact are imported with `minimized-import`, tracked
-by `corpus/seeds/minimized/manifest.json`, and replayed by PR CI with
-`-runs=0` before the short fuzz smoke runs.
-The same periodic workflow runs two short deterministic `erofs-rs fuzz`
-campaigns, merges their `fuzz-buckets.json` reports with `erofs-rs triage`,
-and uploads the resulting `erofs-rs.bucket-db.v1` database under
-`corpus/triage/`.
+by `corpus/seeds/minimized/manifest.json`, and replayed by both PR CI and the
+weekly fuzzing workflow with `-runs=0`.
+The same periodic workflow runs deterministic `erofs-rs fuzz` campaigns at the
+configured schedule/manual budget, merges their `fuzz-buckets.json` reports
+with `erofs-rs triage`, uploads the resulting `erofs-rs.bucket-db.v1` database
+under `corpus/triage/`, and writes a GitHub step summary with cmin totals,
+reviewed replay totals, and actionable bucket counts for issue triage.
 
 ### Seed matrix generation
 
@@ -602,14 +610,16 @@ CI is split by cost and feedback speed:
   `dump.erofs`, and performs a deterministic short fuzz smoke with `--no-tui`.
 - `.github/workflows/fuzz-erofs.yml` runs weekly and by manual dispatch. It
   builds `vendor/erofs-utils`, runs tests, generates seed corpus and seed
-  matrix, runs
-  structured mutations, classifies artifacts, builds the upstream libFuzzer
-  target, runs a short fuzzing session, runs the Rust-native libFuzzer targets
-  and `cargo fuzz cmin` corpus minimization, collects the minimized Rust fuzz
-  corpus with `erofs-rs corpus --mode coverage`, records a cmin summary with
-  engine metadata and before/after unit counts, builds ASAN/UBSAN-instrumented
-  `erofs-utils`, scans seeds and generated artifacts for tool crashes,
-  timeouts, and sanitizer diagnostics, and uploads reports, minimized corpora,
+  matrix, validates the reviewed minimized corpus manifest, runs structured
+  mutations including the grammar-aware target, classifies artifacts, builds
+  the upstream libFuzzer target, runs schedule/manual-budgeted fuzzing
+  sessions, replays reviewed minimized corpus units before each Rust-native
+  libFuzzer target, runs `cargo fuzz cmin` corpus minimization, collects the
+  minimized Rust fuzz corpus with `erofs-rs corpus --mode coverage`, records a
+  cmin summary with engine metadata, before/after unit counts, and reviewed
+  replay counts, builds ASAN/UBSAN-instrumented `erofs-utils`, scans seeds and
+  generated artifacts for tool crashes, timeouts, and sanitizer diagnostics,
+  writes an issue-ready step summary, and uploads reports, minimized corpora,
   logs, and manifests.
 - `.github/workflows/kernel-replay.yml` runs weekly and by manual dispatch. It
   scans `corpus/crashes/kernel-candidates/`,

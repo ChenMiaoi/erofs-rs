@@ -313,6 +313,7 @@ fn classification_color(classification: &str) -> Color {
         "accepted_with_errors" => Color::Rgb(251, 191, 36),
         "rejected_checksum" => Color::Rgb(96, 165, 250),
         "rejected_timeout" => Color::Rgb(248, 113, 113),
+        "rejected_oom" | "rejected_signal" | "rejected_crash" => Color::Rgb(248, 113, 113),
         "rejected_corruption" => Color::Rgb(244, 114, 182),
         "rejected_invalid" => Color::Rgb(167, 139, 250),
         "rejected_io_error" => Color::Rgb(45, 212, 191),
