@@ -384,7 +384,10 @@ separately from unsafe tool behavior.
 
 Kernel replay is intentionally **not** run in CI because building the kernel is
 too heavy for the default GitHub Actions runner. Use the local `Makefile` for
-QEMU-based kernel testing.
+QEMU-based kernel testing. The Rust library includes the
+`erofs-rs.kernel-replay.v1` report schema and dmesg classifier used to keep
+future QEMU replay reports aligned with the existing unsafe-kernel-output
+policy.
 
 Issue and pull request templates require reproducible commands, fuzz seeds or
 artifacts when relevant, observed output, test coverage, and DCO-style
