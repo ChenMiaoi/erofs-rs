@@ -2,8 +2,8 @@ use anyhow::Result;
 use clap::Parser;
 use erofs_rs::cli::{Cli, Commands};
 use erofs_rs::{
-    bundle, corpus, fuzz, info, inject, kernel_replay, minimized, mutate, oracle, replay,
-    seed_manifest, triage,
+    bundle, corpus, fuzz, info, inject, kernel_queue, kernel_replay, minimized, mutate, oracle,
+    replay, seed_manifest, triage,
 };
 
 fn main() -> Result<()> {
@@ -22,6 +22,8 @@ fn main() -> Result<()> {
         Commands::Oracle(args) => oracle::run(args),
         Commands::KernelReport(args) => kernel_replay::run(args),
         Commands::KernelSummary(args) => kernel_replay::run_summary(args),
+        Commands::KernelBuckets(args) => kernel_replay::run_buckets(args),
+        Commands::KernelQueueImport(args) => kernel_queue::run_import(args),
         Commands::SeedManifest(args) => seed_manifest::run(args),
         Commands::MinimizedImport(args) => minimized::run_import(args),
         Commands::MinimizedCheck(args) => minimized::run_check(args),

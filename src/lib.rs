@@ -15,6 +15,7 @@ pub mod image;
 pub mod info;
 pub mod inject;
 pub mod inode;
+pub mod kernel_queue;
 pub mod kernel_replay;
 pub mod minimized;
 pub mod mutate;

@@ -1,8 +1,8 @@
-use crate::cli::{KernelReportArgs, KernelSummaryArgs};
+use crate::cli::{KernelBucketsArgs, KernelReportArgs, KernelSummaryArgs};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::fs::File;
 use std::io::Read;
@@ -11,6 +11,7 @@ use thiserror::Error;
 
 pub const KERNEL_REPLAY_REPORT_SCHEMA: &str = "erofs-rs.kernel-replay.v1";
 pub const KERNEL_REPLAY_SUMMARY_SCHEMA: &str = "erofs-rs.kernel-replay-summary.v1";
+pub const KERNEL_BUCKET_DATABASE_SCHEMA: &str = "erofs-rs.kernel-bucket-db.v1";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -40,6 +41,14 @@ pub struct KernelReplayReport {
 pub struct KernelReplaySummary {
     pub schema: String,
     pub queue: String,
+    #[serde(default)]
+    pub kernel_profile: Option<String>,
+    #[serde(default)]
+    pub kernel_source: Option<String>,
+    #[serde(default)]
+    pub kernel_artifact: Option<String>,
+    #[serde(default)]
+    pub bucket_database: Option<String>,
     pub candidate_count: usize,
     pub failure_count: usize,
     pub reports: Vec<KernelReplaySummaryEntry>,
@@ -49,11 +58,25 @@ pub struct KernelReplaySummary {
 #[serde(deny_unknown_fields)]
 pub struct KernelReplaySummaryEntry {
     pub candidate: String,
+    #[serde(default)]
+    pub queue_profile: Option<String>,
+    #[serde(default)]
+    pub expectation: Option<String>,
     pub artifact_sha256: String,
+    #[serde(default)]
+    pub kernel_profile: Option<String>,
     pub qemu_exit_code: i32,
     pub replay_status: String,
     pub report_status: String,
     pub report_path: String,
+    #[serde(default)]
+    pub outcome: Option<KernelReplayOutcome>,
+    #[serde(default)]
+    pub signature: Option<String>,
+    #[serde(default)]
+    pub dangerous_pattern: Option<String>,
+    #[serde(default)]
+    pub regression_status: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,6 +84,61 @@ pub struct KernelReplayVerdict {
     pub outcome: KernelReplayOutcome,
     pub message: String,
     pub signature: String,
+    pub dangerous_pattern: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct KernelSummaryInput {
+    path: String,
+    summary: KernelReplaySummary,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct KernelBucketDatabase {
+    pub schema: String,
+    pub source_summaries: Vec<KernelBucketSource>,
+    pub buckets: Vec<KernelBucketEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct KernelBucketSource {
+    pub path: String,
+    pub queue: String,
+    pub kernel_profile: String,
+    pub kernel_source: String,
+    pub candidate_count: usize,
+    pub failure_count: usize,
+    pub bucket_count: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct KernelBucketEntry {
+    pub signature: String,
+    pub outcome: KernelReplayOutcome,
+    pub dangerous_pattern: Option<String>,
+    pub total_count: u64,
+    pub summary_count: u64,
+    pub kernel_profiles: Vec<String>,
+    pub queue_profiles: Vec<String>,
+    pub first_seen_summary: String,
+    pub examples: Vec<KernelBucketExample>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct KernelBucketExample {
+    pub summary_path: String,
+    pub candidate: String,
+    pub queue_profile: String,
+    pub kernel_profile: String,
+    pub artifact_sha256: String,
+    pub report_path: String,
+    pub kernel_git: Option<String>,
+    pub qemu_exit_code: i32,
+    pub outcome: KernelReplayOutcome,
     pub dangerous_pattern: Option<String>,
 }
 
@@ -91,6 +169,10 @@ pub enum KernelReplayReportError {
     DuplicateSummaryCandidate(String),
     #[error("kernel replay summary contains duplicate report path: {0}")]
     DuplicateSummaryReportPath(String),
+    #[error("kernel replay summary field {field} is empty")]
+    EmptySummaryField { field: &'static str },
+    #[error("kernel replay summary field {field} has invalid value: {value}")]
+    InvalidSummaryValue { field: &'static str, value: String },
     #[error(
         "kernel replay summary count mismatch for {field}: expected {expected}, actual {actual}"
     )]
@@ -98,6 +180,31 @@ pub enum KernelReplayReportError {
         field: &'static str,
         expected: usize,
         actual: usize,
+    },
+    #[error("failed to decode kernel bucket database: {0}")]
+    BucketDecode(#[source] serde_json::Error),
+    #[error("unsupported kernel bucket database schema: {0}")]
+    UnsupportedBucketSchema(String),
+    #[error("kernel bucket database field {0} is empty")]
+    EmptyBucketField(&'static str),
+    #[error("kernel bucket database contains duplicate source summary: {0}")]
+    DuplicateBucketSource(String),
+    #[error("kernel bucket database contains duplicate signature: {0}")]
+    DuplicateBucketSignature(String),
+    #[error("kernel bucket database example references unknown source summary: {0}")]
+    UnknownBucketExampleSource(String),
+    #[error("kernel bucket database signature {signature} does not match outcome {outcome:?}")]
+    InvalidBucketSignaturePrefix {
+        outcome: KernelReplayOutcome,
+        signature: String,
+    },
+    #[error(
+        "kernel bucket database count mismatch for {field}: expected {expected}, actual {actual}"
+    )]
+    BucketCountMismatch {
+        field: &'static str,
+        expected: u64,
+        actual: u64,
     },
 }
 
@@ -134,6 +241,15 @@ pub fn parse_kernel_replay_summary(
     let summary: KernelReplaySummary = serde_json::from_str(content)?;
     validate_kernel_replay_summary(&summary)?;
     Ok(summary)
+}
+
+pub fn parse_kernel_bucket_database(
+    content: &str,
+) -> std::result::Result<KernelBucketDatabase, KernelReplayReportError> {
+    let database: KernelBucketDatabase =
+        serde_json::from_str(content).map_err(KernelReplayReportError::BucketDecode)?;
+    validate_kernel_bucket_database(&database)?;
+    Ok(database)
 }
 
 pub fn validate_kernel_replay_report(
@@ -185,6 +301,10 @@ pub fn validate_kernel_replay_summary(
         ));
     }
     require_nonempty("queue", &summary.queue)?;
+    require_optional_summary_nonempty("kernel_profile", &summary.kernel_profile)?;
+    require_optional_summary_nonempty("kernel_source", &summary.kernel_source)?;
+    require_optional_summary_nonempty("kernel_artifact", &summary.kernel_artifact)?;
+    require_optional_summary_nonempty("bucket_database", &summary.bucket_database)?;
     let mut candidates = HashSet::new();
     let mut report_paths = HashSet::new();
     let mut failures = 0usize;
@@ -216,18 +336,45 @@ fn validate_summary_entry(
     entry: &KernelReplaySummaryEntry,
 ) -> std::result::Result<(), KernelReplayReportError> {
     require_nonempty("reports.candidate", &entry.candidate)?;
+    require_optional_summary_value(
+        "reports.queue_profile",
+        &entry.queue_profile,
+        &["general", "kasan", "kcov", "regression"],
+    )?;
+    require_optional_summary_value(
+        "reports.expectation",
+        &entry.expectation,
+        &["reject", "no-unsafe"],
+    )?;
     require_sha256("reports.artifact_sha256", &entry.artifact_sha256)?;
+    require_optional_summary_nonempty("reports.kernel_profile", &entry.kernel_profile)?;
     require_summary_status(
         "reports.replay_status",
         &entry.replay_status,
-        &["rejected", "needs-triage"],
+        &["accepted", "rejected", "needs-triage"],
     )?;
     require_summary_status(
         "reports.report_status",
         &entry.report_status,
         &["written", "failed"],
     )?;
-    require_nonempty("reports.report_path", &entry.report_path)
+    require_nonempty("reports.report_path", &entry.report_path)?;
+    require_optional_summary_nonempty("reports.signature", &entry.signature)?;
+    require_optional_summary_nonempty("reports.dangerous_pattern", &entry.dangerous_pattern)?;
+    require_optional_summary_value(
+        "reports.regression_status",
+        &entry.regression_status,
+        &["not-applicable", "passed", "failed"],
+    )?;
+    if let (Some(outcome), Some(signature)) = (&entry.outcome, &entry.signature) {
+        if !signature.starts_with(signature_prefix(outcome)) {
+            return Err(KernelReplayReportError::InvalidSignaturePrefix {
+                outcome: outcome.clone(),
+                signature: signature.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn require_summary_status(
@@ -256,6 +403,223 @@ fn require_summary_count(
         field,
         expected,
         actual,
+    })
+}
+
+fn require_optional_summary_nonempty(
+    field: &'static str,
+    value: &Option<String>,
+) -> std::result::Result<(), KernelReplayReportError> {
+    if matches!(value, Some(value) if value.is_empty()) {
+        return Err(KernelReplayReportError::EmptySummaryField { field });
+    }
+    Ok(())
+}
+
+fn require_optional_summary_value(
+    field: &'static str,
+    value: &Option<String>,
+    allowed: &[&str],
+) -> std::result::Result<(), KernelReplayReportError> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    if value.is_empty() {
+        return Err(KernelReplayReportError::EmptySummaryField { field });
+    }
+    if allowed.contains(&value.as_str()) {
+        return Ok(());
+    }
+    Err(KernelReplayReportError::InvalidSummaryValue {
+        field,
+        value: value.clone(),
+    })
+}
+
+pub fn validate_kernel_bucket_database(
+    database: &KernelBucketDatabase,
+) -> std::result::Result<(), KernelReplayReportError> {
+    if database.schema != KERNEL_BUCKET_DATABASE_SCHEMA {
+        return Err(KernelReplayReportError::UnsupportedBucketSchema(
+            database.schema.clone(),
+        ));
+    }
+    let mut sources = HashSet::new();
+    let mut source_bucket_counts = BTreeMap::new();
+    for source in &database.source_summaries {
+        require_bucket_nonempty("source_summaries.path", &source.path)?;
+        require_bucket_nonempty("source_summaries.queue", &source.queue)?;
+        require_bucket_nonempty("source_summaries.kernel_profile", &source.kernel_profile)?;
+        require_bucket_nonempty("source_summaries.kernel_source", &source.kernel_source)?;
+        if !sources.insert(source.path.as_str()) {
+            return Err(KernelReplayReportError::DuplicateBucketSource(
+                source.path.clone(),
+            ));
+        }
+        source_bucket_counts.insert(source.path.as_str(), 0u64);
+    }
+
+    let mut signatures = HashSet::new();
+    for bucket in &database.buckets {
+        validate_kernel_bucket_entry(bucket, &sources, &mut source_bucket_counts)?;
+        if !signatures.insert(bucket.signature.as_str()) {
+            return Err(KernelReplayReportError::DuplicateBucketSignature(
+                bucket.signature.clone(),
+            ));
+        }
+    }
+
+    for source in &database.source_summaries {
+        let expected = *source_bucket_counts.get(source.path.as_str()).unwrap_or(&0);
+        require_bucket_count(
+            "source_summaries.bucket_count",
+            expected,
+            usize_to_u64("source_summaries.bucket_count", source.bucket_count)?,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn validate_kernel_bucket_entry<'a>(
+    bucket: &'a KernelBucketEntry,
+    sources: &HashSet<&'a str>,
+    source_bucket_counts: &mut BTreeMap<&'a str, u64>,
+) -> std::result::Result<(), KernelReplayReportError> {
+    require_bucket_nonempty("buckets.signature", &bucket.signature)?;
+    if !bucket
+        .signature
+        .starts_with(signature_prefix(&bucket.outcome))
+    {
+        return Err(KernelReplayReportError::InvalidBucketSignaturePrefix {
+            outcome: bucket.outcome.clone(),
+            signature: bucket.signature.clone(),
+        });
+    }
+    if bucket.total_count == 0 {
+        return Err(KernelReplayReportError::BucketCountMismatch {
+            field: "buckets.total_count",
+            expected: 1,
+            actual: 0,
+        });
+    }
+    if bucket.summary_count == 0 {
+        return Err(KernelReplayReportError::BucketCountMismatch {
+            field: "buckets.summary_count",
+            expected: 1,
+            actual: 0,
+        });
+    }
+    require_bucket_count(
+        "buckets.total_count",
+        usize_to_u64("buckets.examples", bucket.examples.len())?,
+        bucket.total_count,
+    )?;
+    if bucket.summary_count > bucket.total_count {
+        return Err(KernelReplayReportError::BucketCountMismatch {
+            field: "buckets.summary_count",
+            expected: bucket.total_count,
+            actual: bucket.summary_count,
+        });
+    }
+    if bucket.kernel_profiles.is_empty() {
+        return Err(KernelReplayReportError::EmptyBucketField(
+            "buckets.kernel_profiles",
+        ));
+    }
+    if bucket.queue_profiles.is_empty() {
+        return Err(KernelReplayReportError::EmptyBucketField(
+            "buckets.queue_profiles",
+        ));
+    }
+    require_bucket_nonempty("buckets.first_seen_summary", &bucket.first_seen_summary)?;
+    if bucket.examples.is_empty() {
+        return Err(KernelReplayReportError::EmptyBucketField(
+            "buckets.examples",
+        ));
+    }
+    let mut example_sources = HashSet::new();
+    for example in &bucket.examples {
+        validate_kernel_bucket_example(example, &bucket.outcome)?;
+        if !sources.contains(example.summary_path.as_str()) {
+            return Err(KernelReplayReportError::UnknownBucketExampleSource(
+                example.summary_path.clone(),
+            ));
+        }
+        if example_sources.insert(example.summary_path.as_str()) {
+            let count = source_bucket_counts
+                .get_mut(example.summary_path.as_str())
+                .expect("source was checked above");
+            *count = count
+                .checked_add(1)
+                .ok_or(KernelReplayReportError::BucketCountMismatch {
+                    field: "source_summaries.bucket_count",
+                    expected: u64::MAX,
+                    actual: *count,
+                })?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_kernel_bucket_example(
+    example: &KernelBucketExample,
+    outcome: &KernelReplayOutcome,
+) -> std::result::Result<(), KernelReplayReportError> {
+    require_bucket_nonempty("buckets.examples.summary_path", &example.summary_path)?;
+    require_bucket_nonempty("buckets.examples.candidate", &example.candidate)?;
+    require_bucket_nonempty("buckets.examples.queue_profile", &example.queue_profile)?;
+    require_bucket_nonempty("buckets.examples.kernel_profile", &example.kernel_profile)?;
+    require_sha256("buckets.examples.artifact_sha256", &example.artifact_sha256)?;
+    require_bucket_nonempty("buckets.examples.report_path", &example.report_path)?;
+    if example.outcome != *outcome {
+        return Err(KernelReplayReportError::InvalidSummaryValue {
+            field: "buckets.examples.outcome",
+            value: format!("{:?}", example.outcome),
+        });
+    }
+    if let Some(kernel_git) = &example.kernel_git {
+        require_bucket_nonempty("buckets.examples.kernel_git", kernel_git)?;
+    }
+    if let Some(pattern) = &example.dangerous_pattern {
+        require_bucket_nonempty("buckets.examples.dangerous_pattern", pattern)?;
+    }
+    Ok(())
+}
+
+fn require_bucket_nonempty(
+    field: &'static str,
+    value: &str,
+) -> std::result::Result<(), KernelReplayReportError> {
+    if value.is_empty() {
+        return Err(KernelReplayReportError::EmptyBucketField(field));
+    }
+    Ok(())
+}
+
+fn require_bucket_count(
+    field: &'static str,
+    expected: u64,
+    actual: u64,
+) -> std::result::Result<(), KernelReplayReportError> {
+    if expected == actual {
+        return Ok(());
+    }
+    Err(KernelReplayReportError::BucketCountMismatch {
+        field,
+        expected,
+        actual,
+    })
+}
+
+fn usize_to_u64(
+    field: &'static str,
+    value: usize,
+) -> std::result::Result<u64, KernelReplayReportError> {
+    u64::try_from(value).map_err(|_| KernelReplayReportError::BucketCountMismatch {
+        field,
+        expected: u64::MAX,
+        actual: u64::MAX,
     })
 }
 
@@ -359,6 +723,221 @@ fn write_report(path: &Path, report: &KernelReplayReport) -> Result<()> {
         .with_context(|| format!("failed to write kernel replay report {}", path.display()))
 }
 
+fn read_kernel_summary(path: &Path) -> Result<KernelSummaryInput> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("failed to read kernel replay summary {}", path.display()))?;
+    let summary = parse_kernel_replay_summary(&content)
+        .with_context(|| format!("failed to parse kernel replay summary {}", path.display()))?;
+    Ok(KernelSummaryInput {
+        path: path.display().to_string(),
+        summary,
+    })
+}
+
+fn read_entry_report(
+    summary_path: &Path,
+    entry: &KernelReplaySummaryEntry,
+) -> Result<KernelReplayReport> {
+    let report_path = Path::new(&entry.report_path);
+    let resolved = if report_path.is_absolute() || report_path.exists() {
+        report_path.to_path_buf()
+    } else {
+        summary_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(report_path)
+    };
+    let content = fs::read_to_string(&resolved)
+        .with_context(|| format!("failed to read kernel replay report {}", resolved.display()))?;
+    parse_kernel_replay_report(&content).with_context(|| {
+        format!(
+            "failed to parse kernel replay report {}",
+            resolved.display()
+        )
+    })
+}
+
+fn summary_kernel_profile(summary: &KernelReplaySummary) -> String {
+    summary
+        .kernel_profile
+        .clone()
+        .unwrap_or_else(|| "source-default".to_string())
+}
+
+fn summary_kernel_source(summary: &KernelReplaySummary) -> String {
+    summary
+        .kernel_source
+        .clone()
+        .unwrap_or_else(|| "source-build".to_string())
+}
+
+fn entry_queue_profile(entry: &KernelReplaySummaryEntry) -> String {
+    entry
+        .queue_profile
+        .clone()
+        .unwrap_or_else(|| "general".to_string())
+}
+
+fn entry_kernel_profile(summary: &KernelReplaySummary, entry: &KernelReplaySummaryEntry) -> String {
+    entry
+        .kernel_profile
+        .clone()
+        .unwrap_or_else(|| summary_kernel_profile(summary))
+}
+
+fn kernel_bucket_example(
+    summary_path: &str,
+    summary: &KernelReplaySummary,
+    entry: &KernelReplaySummaryEntry,
+    report: &KernelReplayReport,
+) -> KernelBucketExample {
+    KernelBucketExample {
+        summary_path: summary_path.to_string(),
+        candidate: entry.candidate.clone(),
+        queue_profile: entry_queue_profile(entry),
+        kernel_profile: entry_kernel_profile(summary, entry),
+        artifact_sha256: entry.artifact_sha256.clone(),
+        report_path: entry.report_path.clone(),
+        kernel_git: report.kernel_git.clone(),
+        qemu_exit_code: entry.qemu_exit_code,
+        outcome: report.outcome.clone(),
+        dangerous_pattern: report.dangerous_pattern.clone(),
+    }
+}
+
+fn insert_kernel_bucket(
+    buckets: &mut BTreeMap<String, KernelBucketEntry>,
+    summary_path: &str,
+    summary: &KernelReplaySummary,
+    entry: &KernelReplaySummaryEntry,
+    report: &KernelReplayReport,
+) -> Result<()> {
+    let signature = report.signature.clone();
+    let example = kernel_bucket_example(summary_path, summary, entry, report);
+    match buckets.entry(signature.clone()) {
+        std::collections::btree_map::Entry::Vacant(slot) => {
+            slot.insert(KernelBucketEntry {
+                signature,
+                outcome: report.outcome.clone(),
+                dangerous_pattern: report.dangerous_pattern.clone(),
+                total_count: 1,
+                summary_count: 1,
+                kernel_profiles: vec![example.kernel_profile.clone()],
+                queue_profiles: vec![example.queue_profile.clone()],
+                first_seen_summary: summary_path.to_string(),
+                examples: vec![example],
+            });
+        }
+        std::collections::btree_map::Entry::Occupied(mut slot) => {
+            let bucket = slot.get_mut();
+            if bucket.outcome != report.outcome
+                || bucket.dangerous_pattern != report.dangerous_pattern
+            {
+                bail!(
+                    "kernel signature {} changed outcome metadata",
+                    bucket.signature
+                );
+            }
+            bucket.total_count = bucket
+                .total_count
+                .checked_add(1)
+                .context("kernel bucket total count overflow")?;
+            if !bucket
+                .examples
+                .iter()
+                .any(|candidate| candidate.summary_path == summary_path)
+            {
+                bucket.summary_count = bucket
+                    .summary_count
+                    .checked_add(1)
+                    .context("kernel bucket summary count overflow")?;
+            }
+            if !bucket
+                .kernel_profiles
+                .iter()
+                .any(|profile| profile == &example.kernel_profile)
+            {
+                bucket.kernel_profiles.push(example.kernel_profile.clone());
+                bucket.kernel_profiles.sort();
+            }
+            if !bucket
+                .queue_profiles
+                .iter()
+                .any(|profile| profile == &example.queue_profile)
+            {
+                bucket.queue_profiles.push(example.queue_profile.clone());
+                bucket.queue_profiles.sort();
+            }
+            bucket.examples.push(example);
+        }
+    }
+    Ok(())
+}
+
+fn build_kernel_bucket_database(
+    mut inputs: Vec<KernelSummaryInput>,
+) -> Result<KernelBucketDatabase> {
+    inputs.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut source_summaries = Vec::new();
+    let mut buckets = BTreeMap::new();
+    let mut seen_summaries = HashSet::new();
+
+    for input in &inputs {
+        if !seen_summaries.insert(input.path.as_str()) {
+            bail!("duplicate kernel summary input {}", input.path);
+        }
+        let summary_path = Path::new(&input.path);
+        let mut source_signatures = HashSet::new();
+        for entry in &input.summary.reports {
+            if entry.report_status != "written" {
+                continue;
+            }
+            let report = read_entry_report(summary_path, entry)?;
+            if report.artifact_sha256.as_deref() != Some(entry.artifact_sha256.as_str()) {
+                bail!(
+                    "kernel report {} digest does not match summary candidate {}",
+                    entry.report_path,
+                    entry.candidate
+                );
+            }
+            source_signatures.insert(report.signature.clone());
+            insert_kernel_bucket(&mut buckets, &input.path, &input.summary, entry, &report)?;
+        }
+        source_summaries.push(KernelBucketSource {
+            path: input.path.clone(),
+            queue: input.summary.queue.clone(),
+            kernel_profile: summary_kernel_profile(&input.summary),
+            kernel_source: summary_kernel_source(&input.summary),
+            candidate_count: input.summary.candidate_count,
+            failure_count: input.summary.failure_count,
+            bucket_count: source_signatures.len(),
+        });
+    }
+
+    let database = KernelBucketDatabase {
+        schema: KERNEL_BUCKET_DATABASE_SCHEMA.to_string(),
+        source_summaries,
+        buckets: buckets.into_values().collect(),
+    };
+    validate_kernel_bucket_database(&database)
+        .map_err(|error| anyhow::anyhow!("generated kernel bucket database is invalid: {error}"))?;
+    Ok(database)
+}
+
+fn write_kernel_bucket_database(path: &Path, database: &KernelBucketDatabase) -> Result<()> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let json = serde_json::to_string_pretty(database)
+        .context("failed to serialize kernel bucket database")?;
+    fs::write(path, format!("{json}\n"))
+        .with_context(|| format!("failed to write kernel bucket database {}", path.display()))
+}
+
 pub fn run(args: &KernelReportArgs) -> Result<()> {
     let dmesg_path = Path::new(&args.dmesg);
     let dmesg = fs::read_to_string(dmesg_path)
@@ -388,6 +967,22 @@ pub fn run_summary(args: &KernelSummaryArgs) -> Result<()> {
     println!(
         "Kernel replay summary OK: {} candidate(s), {} failure(s)",
         summary.candidate_count, summary.failure_count
+    );
+    Ok(())
+}
+
+pub fn run_buckets(args: &KernelBucketsArgs) -> Result<()> {
+    let mut inputs = Vec::new();
+    for summary in &args.summaries {
+        inputs.push(read_kernel_summary(Path::new(summary))?);
+    }
+    let database = build_kernel_bucket_database(inputs)?;
+    write_kernel_bucket_database(Path::new(&args.output), &database)?;
+
+    println!(
+        "Kernel bucket database OK: {} source summary(s), {} signature bucket(s)",
+        database.source_summaries.len(),
+        database.buckets.len()
     );
     Ok(())
 }
@@ -507,11 +1102,12 @@ fn normalize_signature_detail(detail: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        KERNEL_REPLAY_REPORT_SCHEMA, KERNEL_REPLAY_SUMMARY_SCHEMA, KernelReplayOutcome,
-        KernelReplayReportError, build_kernel_replay_report, classify_dmesg_text,
-        parse_kernel_replay_report, parse_kernel_replay_summary, run, run_summary,
+        KERNEL_BUCKET_DATABASE_SCHEMA, KERNEL_REPLAY_REPORT_SCHEMA, KERNEL_REPLAY_SUMMARY_SCHEMA,
+        KernelReplayOutcome, KernelReplayReportError, build_kernel_replay_report,
+        classify_dmesg_text, parse_kernel_bucket_database, parse_kernel_replay_report,
+        parse_kernel_replay_summary, run, run_buckets, run_summary,
     };
-    use crate::cli::{KernelReportArgs, KernelSummaryArgs};
+    use crate::cli::{KernelBucketsArgs, KernelReportArgs, KernelSummaryArgs};
     use sha2::{Digest, Sha256};
     use std::fs;
 
@@ -528,25 +1124,43 @@ mod tests {
 
     const VALID_SUMMARY: &str = r#"{
   "schema": "erofs-rs.kernel-replay-summary.v1",
-  "queue": "corpus/crashes/kernel-candidates",
+  "queue": "multi:kernel-candidates,kernel-kasan-candidates,kernel-kcov-candidates,kernel-regressions",
+  "kernel_profile": "kasan-kcov",
+  "kernel_source": "source-build",
+  "kernel_artifact": null,
+  "bucket_database": "kernel-replay/kernel-buckets.json",
   "candidate_count": 2,
   "failure_count": 1,
   "reports": [
     {
       "candidate": "corpus/crashes/kernel-candidates/a.erofs",
+      "queue_profile": "general",
+      "expectation": "reject",
       "artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "kernel_profile": "kasan-kcov",
       "qemu_exit_code": 0,
       "replay_status": "rejected",
       "report_status": "written",
-      "report_path": "kernel-replay/reports/a.kernel-report.json"
+      "report_path": "kernel-replay/reports/a.kernel-report.json",
+      "outcome": "rejected",
+      "signature": "kernel_rejected: failed to verify superblock checksum",
+      "dangerous_pattern": null,
+      "regression_status": "not-applicable"
     },
     {
-      "candidate": "corpus/crashes/kernel-candidates/b.erofs",
+      "candidate": "corpus/regressions/kernel/b.erofs",
+      "queue_profile": "regression",
+      "expectation": "reject",
       "artifact_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "kernel_profile": "kasan-kcov",
       "qemu_exit_code": 1,
       "replay_status": "needs-triage",
       "report_status": "failed",
-      "report_path": "kernel-replay/reports/b.kernel-report.json"
+      "report_path": "kernel-replay/reports/b.kernel-report.json",
+      "outcome": null,
+      "signature": null,
+      "dangerous_pattern": null,
+      "regression_status": "failed"
     }
   ]
 }"#;
@@ -635,10 +1249,18 @@ mod tests {
         let summary = parse_kernel_replay_summary(VALID_SUMMARY).unwrap();
 
         assert_eq!(summary.schema, KERNEL_REPLAY_SUMMARY_SCHEMA);
-        assert_eq!(summary.queue, "corpus/crashes/kernel-candidates");
+        assert_eq!(
+            summary.queue,
+            "multi:kernel-candidates,kernel-kasan-candidates,kernel-kcov-candidates,kernel-regressions"
+        );
+        assert_eq!(summary.kernel_profile.as_deref(), Some("kasan-kcov"));
         assert_eq!(summary.candidate_count, 2);
         assert_eq!(summary.failure_count, 1);
         assert_eq!(summary.reports.len(), 2);
+        assert_eq!(
+            summary.reports[1].regression_status.as_deref(),
+            Some("failed")
+        );
     }
 
     #[test]
@@ -652,6 +1274,107 @@ mod tests {
         };
 
         run_summary(&args).unwrap();
+    }
+
+    #[test]
+    fn kernel_bucket_command_merges_summary_reports() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let report_dir = tempdir.path().join("kernel-replay").join("reports");
+        fs::create_dir_all(&report_dir).unwrap();
+        let report_path = report_dir.join("a.kernel-report.json");
+        fs::write(
+            &report_path,
+            r#"{
+  "schema": "erofs-rs.kernel-replay.v1",
+  "artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "kernel_git": "linux-test-rev",
+  "qemu_exit_code": 0,
+  "outcome": "rejected",
+  "message": "failed to verify superblock checksum",
+  "signature": "kernel_rejected: failed to verify superblock checksum",
+  "dangerous_pattern": null
+}"#,
+        )
+        .unwrap();
+        let summary_path = tempdir.path().join("kernel-replay").join("summary.json");
+        let summary = VALID_SUMMARY.replace(
+            "kernel-replay/reports/a.kernel-report.json",
+            &report_path.to_string_lossy(),
+        );
+        fs::write(&summary_path, summary).unwrap();
+        let output = tempdir.path().join("kernel-buckets.json");
+        let args = KernelBucketsArgs {
+            summaries: vec![summary_path.to_string_lossy().into_owned()],
+            output: output.to_string_lossy().into_owned(),
+        };
+
+        run_buckets(&args).unwrap();
+
+        let database = fs::read_to_string(output).unwrap();
+        let database = parse_kernel_bucket_database(&database).unwrap();
+        assert_eq!(database.schema, KERNEL_BUCKET_DATABASE_SCHEMA);
+        assert_eq!(database.source_summaries.len(), 1);
+        assert_eq!(database.buckets.len(), 1);
+        assert_eq!(
+            database.buckets[0].signature,
+            "kernel_rejected: failed to verify superblock checksum"
+        );
+        assert_eq!(database.buckets[0].kernel_profiles, vec!["kasan-kcov"]);
+        assert_eq!(database.buckets[0].queue_profiles, vec!["general"]);
+    }
+
+    #[test]
+    fn kernel_bucket_parser_rejects_signature_prefix_mismatch() {
+        let database = r#"{
+  "schema": "erofs-rs.kernel-bucket-db.v1",
+  "source_summaries": [
+    {
+      "path": "kernel-replay/summary.json",
+      "queue": "multi",
+      "kernel_profile": "kasan-kcov",
+      "kernel_source": "source-build",
+      "candidate_count": 1,
+      "failure_count": 0,
+      "bucket_count": 1
+    }
+  ],
+  "buckets": [
+    {
+      "signature": "kernel_unsafe: BUG",
+      "outcome": "rejected",
+      "dangerous_pattern": null,
+      "total_count": 1,
+      "summary_count": 1,
+      "kernel_profiles": ["kasan-kcov"],
+      "queue_profiles": ["general"],
+      "first_seen_summary": "kernel-replay/summary.json",
+      "examples": [
+        {
+          "summary_path": "kernel-replay/summary.json",
+          "candidate": "corpus/crashes/kernel-candidates/a.erofs",
+          "queue_profile": "general",
+          "kernel_profile": "kasan-kcov",
+          "artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "report_path": "kernel-replay/reports/a.kernel-report.json",
+          "kernel_git": "linux-test-rev",
+          "qemu_exit_code": 0,
+          "outcome": "rejected",
+          "dangerous_pattern": null
+        }
+      ]
+    }
+  ]
+}"#;
+
+        let error = parse_kernel_bucket_database(database).unwrap_err();
+
+        assert!(matches!(
+            error,
+            KernelReplayReportError::InvalidBucketSignaturePrefix {
+                outcome: KernelReplayOutcome::Rejected,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -673,7 +1396,7 @@ mod tests {
     #[test]
     fn kernel_replay_summary_parser_rejects_duplicate_candidate() {
         let summary = VALID_SUMMARY.replace(
-            "corpus/crashes/kernel-candidates/b.erofs",
+            "corpus/regressions/kernel/b.erofs",
             "corpus/crashes/kernel-candidates/a.erofs",
         );
 

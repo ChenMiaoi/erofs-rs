@@ -19,6 +19,7 @@ INIT_BIN := $(ROOTFS_DIR)/init
 INITRAMFS := $(BUILD)/initramfs.cpio.gz
 EROFS_SRC := $(BUILD)/erofs-root
 EROFS_IMG := $(BUILD)/rootfs.erofs
+KERNEL_REPLAY_ARTIFACT := $(BUILD)/kernel-replay-artifact
 MKFS_EROFS := $(EROFS_UTILS_BUILD)/mkfs/mkfs.erofs
 EROFS_DRIVE := -drive file=$(EROFS_IMG),if=virtio,format=raw,readonly=on
 MALFORMED_QEMU_LOG ?= $(BUILD)/qemu-malformed.log
@@ -36,7 +37,7 @@ QEMU_ARGS := \
 	-initrd $(INITRAMFS) \
 	-append "$(KERNEL_CMDLINE)"
 
-.PHONY: all apt-deps deps-check kernel-config kernel erofs-utils erofs-utils-sanitized erofs-utils-safety initramfs erofs-image run smoke smoke-malformed smoke-dmesg test clean distclean help
+.PHONY: all apt-deps deps-check kernel-config kernel kernel-replay-artifact erofs-utils erofs-utils-sanitized erofs-utils-safety initramfs erofs-image run smoke smoke-malformed smoke-dmesg test clean distclean help
 
 all: kernel initramfs erofs-image
 
@@ -47,6 +48,7 @@ help:
 		'  make deps-check     Check host tools needed by this repo' \
 		'  make kernel-config  Generate .config and enable every EROFS option as built-in' \
 		'  make kernel         Build the Linux bzImage' \
+		'  make kernel-replay-artifact  Stage bzImage and initramfs for replay workflow reuse' \
 		'  make erofs-utils    Build local mkfs.erofs from vendor/erofs-utils' \
 		'  make erofs-utils-sanitized  Build erofs-utils with ASAN/UBSAN instrumentation' \
 		'  make erofs-utils-safety  Run mkfs/fsck/dump safety smoke over generated images' \
@@ -86,6 +88,12 @@ kernel-config: deps-check
 
 kernel: kernel-config
 	$(MAKE) -C $(LINUX) O=$(LINUX_BUILD) ARCH=$(ARCH) -j$(JOBS) bzImage
+
+kernel-replay-artifact: kernel initramfs
+	rm -rf $(KERNEL_REPLAY_ARTIFACT)
+	mkdir -p $(KERNEL_REPLAY_ARTIFACT)
+	cp $(KERNEL_IMAGE) $(KERNEL_REPLAY_ARTIFACT)/bzImage
+	cp $(INITRAMFS) $(KERNEL_REPLAY_ARTIFACT)/initramfs.cpio.gz
 
 erofs-utils: deps-check
 	@if [ ! -x "$(MKFS_EROFS)" ]; then \

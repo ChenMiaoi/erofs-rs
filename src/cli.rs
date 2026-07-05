@@ -34,6 +34,10 @@ pub enum Commands {
     KernelReport(KernelReportArgs),
     /// Validate a scheduled kernel replay summary.
     KernelSummary(KernelSummaryArgs),
+    /// Merge kernel replay summaries into a signature bucket database.
+    KernelBuckets(KernelBucketsArgs),
+    /// Import a reviewed artifact into a curated kernel replay queue.
+    KernelQueueImport(KernelQueueImportArgs),
     /// Validate a generated seed matrix manifest.
     SeedManifest(SeedManifestArgs),
     /// Import reviewed coverage-minimized units into the long-lived seed corpus.
@@ -383,6 +387,50 @@ pub struct KernelReportArgs {
 pub struct KernelSummaryArgs {
     #[arg(long, help = "Path to a generated kernel replay summary JSON file")]
     pub summary: String,
+}
+
+#[derive(Parser, Debug)]
+pub struct KernelBucketsArgs {
+    #[arg(
+        long = "summary",
+        required = true,
+        help = "Input kernel replay summary JSON; repeat to merge runs"
+    )]
+    pub summaries: Vec<String>,
+    #[arg(long, help = "Output kernel signature bucket database JSON")]
+    pub output: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum KernelReplayQueue {
+    /// General curated kernel replay queue.
+    General,
+    /// KASAN-oriented replay queue.
+    Kasan,
+    /// KCOV-oriented replay queue.
+    Kcov,
+    /// Fixed kernel crash artifacts replayed as regressions.
+    Regression,
+}
+
+#[derive(Parser, Debug)]
+pub struct KernelQueueImportArgs {
+    #[arg(long, help = "Reviewed .erofs artifact to import")]
+    pub input: String,
+    #[arg(long, value_enum, help = "Destination kernel replay queue")]
+    pub queue: KernelReplayQueue,
+    #[arg(
+        long,
+        default_value = ".",
+        help = "Repository root containing corpus/ queue directories"
+    )]
+    pub queue_root: String,
+    #[arg(long, help = "Optional stable name stem for the queued artifact")]
+    pub name: Option<String>,
+    #[arg(long, help = "Expected SHA-256 digest for the artifact")]
+    pub artifact_sha256: Option<String>,
+    #[arg(long, help = "Optional kernel replay report to validate provenance")]
+    pub kernel_report: Option<String>,
 }
 
 #[derive(Parser, Debug)]

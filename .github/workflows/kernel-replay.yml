@@ -5,6 +5,20 @@ on:
     # Run weekly on Monday at 03:00 UTC, separate from userspace fuzzing.
     - cron: '0 3 * * 1'
   workflow_dispatch:
+    inputs:
+      prebuilt_kernel_artifact:
+        description: 'Optional artifact name containing bzImage and initramfs.cpio.gz'
+        required: false
+        type: string
+      prebuilt_kernel_run_id:
+        description: 'Optional workflow run id that produced the prebuilt kernel artifact'
+        required: false
+        type: string
+      kernel_profile:
+        description: 'Replay kernel profile label recorded in summaries'
+        required: false
+        default: 'kasan-kcov'
+        type: string
 
 permissions:
   contents: read
@@ -30,49 +44,50 @@ jobs:
         run: |
           set -euo pipefail
           queue="corpus/crashes/kernel-candidates"
+          kasan_queue="corpus/crashes/kernel-kasan-candidates"
+          kcov_queue="corpus/crashes/kernel-kcov-candidates"
+          regression_queue="corpus/regressions/kernel"
           out_dir="kernel-replay"
           mkdir -p "$out_dir"
 
-          if [ ! -d "$queue" ]; then
+          candidates_file="$out_dir/candidates.tsv"
+          : > "$candidates_file"
+          for spec in \
+            "general	reject	$queue" \
+            "kasan	reject	$kasan_queue" \
+            "kcov	reject	$kcov_queue" \
+            "regression	reject	$regression_queue"; do
+            IFS=$'\t' read -r profile expectation path <<< "$spec"
+            if [ -d "$path" ]; then
+              while IFS= read -r img; do
+                printf '%s\t%s\t%s\n' "$profile" "$expectation" "$img" >> "$candidates_file"
+              done < <(find "$path" -type f -name '*.erofs' | sort)
+            fi
+          done
+
+          if [ ! -s "$candidates_file" ]; then
             echo "has_candidates=false" >> "$GITHUB_OUTPUT"
             {
-              echo "No kernel replay queue found at $queue."
-              echo "Add curated .erofs images on a replay branch to run QEMU checks."
+              echo "No kernel replay candidates found."
+              echo "Scanned:"
+              echo "- $queue"
+              echo "- $kasan_queue"
+              echo "- $kcov_queue"
+              echo "- $regression_queue"
             } > "$out_dir/summary.txt"
-            python3 - "$queue" "$out_dir/summary.json" <<'PY'
+            python3 - "$out_dir/summary.json" <<'PY'
           import json
           import sys
           from pathlib import Path
 
-          queue, output = sys.argv[1:]
+          output = sys.argv[1]
           summary = {
               "schema": "erofs-rs.kernel-replay-summary.v1",
-              "queue": queue,
-              "candidate_count": 0,
-              "failure_count": 0,
-              "reports": [],
-          }
-          Path(output).write_text(json.dumps(summary, indent=2) + "\n")
-          PY
-            exit 0
-          fi
-
-          mapfile -t candidates < <(find "$queue" -type f -name '*.erofs' | sort)
-          if [ "${#candidates[@]}" -eq 0 ]; then
-            echo "has_candidates=false" >> "$GITHUB_OUTPUT"
-            {
-              echo "No .erofs kernel replay candidates found in $queue."
-              echo "Add curated images before expecting QEMU replay reports."
-            } > "$out_dir/summary.txt"
-            python3 - "$queue" "$out_dir/summary.json" <<'PY'
-          import json
-          import sys
-          from pathlib import Path
-
-          queue, output = sys.argv[1:]
-          summary = {
-              "schema": "erofs-rs.kernel-replay-summary.v1",
-              "queue": queue,
+              "queue": "multi:kernel-candidates,kernel-kasan-candidates,kernel-kcov-candidates,kernel-regressions",
+              "kernel_profile": "not-run",
+              "kernel_source": "not-run",
+              "kernel_artifact": None,
+              "bucket_database": None,
               "candidate_count": 0,
               "failure_count": 0,
               "reports": [],
@@ -83,12 +98,15 @@ jobs:
           fi
 
           echo "has_candidates=true" >> "$GITHUB_OUTPUT"
-          printf '%s\n' "${candidates[@]}" > "$out_dir/candidates.txt"
-          printf 'Found %s kernel replay candidate(s).\n' "${#candidates[@]}" \
+          candidate_count="$(wc -l < "$candidates_file" | tr -d '[:space:]')"
+          printf 'Found %s kernel replay candidate(s).\n' "$candidate_count" \
             > "$out_dir/summary.txt"
 
       - name: Initialize shallow submodules
-        if: steps.candidates.outputs.has_candidates == 'true'
+        if: >-
+          steps.candidates.outputs.has_candidates == 'true' &&
+          (github.event_name != 'workflow_dispatch' ||
+           inputs.prebuilt_kernel_artifact == '')
         run: |
           git submodule sync --recursive
           git submodule update --init --recursive --depth=1
@@ -104,11 +122,52 @@ jobs:
         if: steps.candidates.outputs.has_candidates == 'true'
         run: make apt-deps
 
+      - name: Validate prebuilt replay kernel inputs
+        if: >-
+          steps.candidates.outputs.has_candidates == 'true' &&
+          github.event_name == 'workflow_dispatch' &&
+          inputs.prebuilt_kernel_artifact != '' &&
+          inputs.prebuilt_kernel_run_id == ''
+        run: |
+          echo "prebuilt_kernel_run_id is required when prebuilt_kernel_artifact is set" >&2
+          exit 1
+
+      - name: Download prebuilt replay kernel
+        if: >-
+          steps.candidates.outputs.has_candidates == 'true' &&
+          github.event_name == 'workflow_dispatch' &&
+          inputs.prebuilt_kernel_artifact != '' &&
+          inputs.prebuilt_kernel_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.prebuilt_kernel_artifact }}
+          path: kernel-prebuilt
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.prebuilt_kernel_run_id }}
+
       - name: Build replay tools
         if: steps.candidates.outputs.has_candidates == 'true'
         run: |
           cargo build --locked --release
-          make kernel initramfs
+          if [ -d kernel-prebuilt ]; then
+            test -f kernel-prebuilt/bzImage
+            test -f kernel-prebuilt/initramfs.cpio.gz
+            echo "Using prebuilt replay kernel artifact"
+          else
+            make kernel-replay-artifact
+          fi
+
+      - name: Upload source-built replay kernel artifact
+        uses: actions/upload-artifact@v4
+        if: >-
+          steps.candidates.outputs.has_candidates == 'true' &&
+          !cancelled() &&
+          (github.event_name != 'workflow_dispatch' ||
+           inputs.prebuilt_kernel_artifact == '')
+        with:
+          name: kernel-replay-kasan-kcov
+          path: build/kernel-replay-artifact/
+          retention-days: 30
 
       - name: Replay kernel candidates
         if: steps.candidates.outputs.has_candidates == 'true'
@@ -120,6 +179,23 @@ jobs:
           entries_jsonl="kernel-replay/summary-entries.jsonl"
           : > "$entries_jsonl"
           kernel_git="$(git -C vendor/linux rev-parse HEAD 2>/dev/null || true)"
+          kernel_profile="${{ inputs.kernel_profile || 'kasan-kcov' }}"
+          kernel_source="source-build"
+          kernel_artifact=""
+          make_kernel_args=()
+          if [ -d kernel-prebuilt ]; then
+            kernel_image="$PWD/kernel-prebuilt/bzImage"
+            initramfs="$PWD/kernel-prebuilt/initramfs.cpio.gz"
+            kernel_source="prebuilt-artifact:${{ inputs.prebuilt_kernel_artifact }}"
+            if [ -n "${{ inputs.prebuilt_kernel_run_id }}" ]; then
+              kernel_source="${kernel_source}:run:${{ inputs.prebuilt_kernel_run_id }}"
+            fi
+            kernel_artifact="kernel-prebuilt"
+            make_kernel_args=(
+              KERNEL_IMAGE="$kernel_image"
+              INITRAMFS="$initramfs"
+            )
+          fi
           kernel_args=()
           if [ -n "$kernel_git" ]; then
             kernel_args=(--kernel-git "$kernel_git")
@@ -127,21 +203,22 @@ jobs:
           failures=0
 
           {
-            echo "| candidate | replay | qemu_rc | report |"
-            echo "|---|---|---:|---|"
+            echo "| queue | candidate | replay | qemu_rc | report | regression |"
+            echo "|---|---|---|---:|---|---|"
           } > kernel-replay/replay-table.md
 
-          while IFS= read -r img; do
+          while IFS=$'\t' read -r queue_profile expectation img; do
             sha="$(sha256sum "$img" | awk '{print $1}')"
             stem="$(basename "${img%.erofs}")"
             safe_stem="$(printf '%s' "$stem" | tr -c 'A-Za-z0-9._-' '_')"
-            prefix="${safe_stem}-${sha:0:12}"
+            prefix="${queue_profile}-${safe_stem}-${sha:0:12}"
             qemu_log="$report_dir/${prefix}.qemu.log"
             qemu_rc_file="$report_dir/${prefix}.qemu.rc"
             json_report="$report_dir/${prefix}.kernel-report.json"
 
             replay="rejected"
             if ! make -o kernel -o initramfs smoke-malformed \
+              "${make_kernel_args[@]}" \
               MALFORMED_IMG="$img" \
               MALFORMED_QEMU_LOG="$qemu_log" \
               MALFORMED_QEMU_EXIT_CODE="$qemu_rc_file"; then
@@ -159,46 +236,89 @@ jobs:
               --output "$json_report"; then
               report="failed"
             fi
+            outcome=""
+            signature=""
+            dangerous_pattern=""
+            if [ "$report" = "written" ]; then
+              IFS=$'\t' read -r outcome signature dangerous_pattern < <(python3 - "$json_report" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          report = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          print(
+              report["outcome"],
+              report["signature"],
+              report.get("dangerous_pattern") or "",
+              sep="\t",
+          )
+          PY
+              )
+            fi
+            regression_status="not-applicable"
+            if [ "$queue_profile" = "regression" ]; then
+              regression_status="passed"
+              if [ "$replay" != "rejected" ] || [ "$report" != "written" ]; then
+                regression_status="failed"
+              fi
+            fi
             if [ "$replay" != "rejected" ] || [ "$report" != "written" ]; then
               failures=$((failures + 1))
             fi
 
-            printf '| `%s` | %s | %s | %s |\n' \
-              "$img" "$replay" "$qemu_rc" "$report" \
+            printf '| %s | `%s` | %s | %s | %s | %s |\n' \
+              "$queue_profile" "$img" "$replay" "$qemu_rc" "$report" "$regression_status" \
               >> kernel-replay/replay-table.md
-            python3 - "$entries_jsonl" "$img" "$sha" "$qemu_rc" \
-              "$replay" "$report" "$json_report" <<'PY'
+            python3 - "$entries_jsonl" "$img" "$queue_profile" "$expectation" \
+              "$sha" "$kernel_profile" "$qemu_rc" "$replay" "$report" \
+              "$json_report" "$outcome" "$signature" "$dangerous_pattern" \
+              "$regression_status" <<'PY'
           import json
           import sys
 
           (
               output,
               candidate,
+              queue_profile,
+              expectation,
               artifact_sha256,
+              kernel_profile,
               qemu_exit_code,
               replay_status,
               report_status,
               report_path,
+              outcome,
+              signature,
+              dangerous_pattern,
+              regression_status,
           ) = sys.argv[1:]
           entry = {
               "candidate": candidate,
+              "queue_profile": queue_profile,
+              "expectation": expectation,
               "artifact_sha256": artifact_sha256,
+              "kernel_profile": kernel_profile,
               "qemu_exit_code": int(qemu_exit_code),
               "replay_status": replay_status,
               "report_status": report_status,
               "report_path": report_path,
+              "outcome": outcome or None,
+              "signature": signature or None,
+              "dangerous_pattern": dangerous_pattern or None,
+              "regression_status": regression_status,
           }
           with open(output, "a", encoding="utf-8") as stream:
               stream.write(json.dumps(entry, sort_keys=True) + "\n")
           PY
-          done < kernel-replay/candidates.txt
+          done < kernel-replay/candidates.tsv
 
-          python3 - "$entries_jsonl" "$failures" kernel-replay/summary.json <<'PY'
+          python3 - "$entries_jsonl" "$failures" "$kernel_profile" \
+            "$kernel_source" "$kernel_artifact" kernel-replay/summary.json <<'PY'
           import json
           import sys
           from pathlib import Path
 
-          entries_path, failures, output = sys.argv[1:]
+          entries_path, failures, kernel_profile, kernel_source, kernel_artifact, output = sys.argv[1:]
           reports = [
               json.loads(line)
               for line in Path(entries_path).read_text().splitlines()
@@ -206,7 +326,11 @@ jobs:
           ]
           summary = {
               "schema": "erofs-rs.kernel-replay-summary.v1",
-              "queue": "corpus/crashes/kernel-candidates",
+              "queue": "multi:kernel-candidates,kernel-kasan-candidates,kernel-kcov-candidates,kernel-regressions",
+              "kernel_profile": kernel_profile,
+              "kernel_source": kernel_source,
+              "kernel_artifact": kernel_artifact or None,
+              "bucket_database": "kernel-replay/kernel-buckets.json",
               "candidate_count": len(reports),
               "failure_count": int(failures),
               "reports": reports,
@@ -215,6 +339,9 @@ jobs:
           PY
           ./target/release/erofs-rs kernel-summary \
             --summary kernel-replay/summary.json
+          ./target/release/erofs-rs kernel-buckets \
+            --summary kernel-replay/summary.json \
+            --output kernel-replay/kernel-buckets.json
 
           {
             cat kernel-replay/summary.txt
@@ -222,6 +349,8 @@ jobs:
             cat kernel-replay/replay-table.md
             echo
             printf 'Replay failures requiring triage: %s\n' "$failures"
+            echo
+            printf 'Kernel bucket database: %s\n' "kernel-replay/kernel-buckets.json"
           } > kernel-replay/summary.md
 
           cat kernel-replay/summary.md >> "$GITHUB_STEP_SUMMARY"

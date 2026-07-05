@@ -489,6 +489,7 @@ make smoke
 | Target | Description |
 |---|---|
 | `make kernel` | Build `arch/x86/boot/bzImage` from `vendor/linux` |
+| `make kernel-replay-artifact` | Stage `bzImage` and `initramfs.cpio.gz` for replay workflow reuse |
 | `make erofs-utils` | Build `mkfs.erofs` from `vendor/erofs-utils` |
 | `make erofs-utils-sanitized` | Build `mkfs.erofs`, `fsck.erofs`, and `dump.erofs` with ASAN/UBSAN |
 | `make erofs-utils-safety` | Run a tool-safety smoke over `mkfs.erofs`, `fsck.erofs`, `dump.erofs`, and available `.erofs` images |
@@ -541,6 +542,36 @@ requires the `kernel_accepted:`, `kernel_rejected:`, `kernel_unsafe:`,
 It also requires unsafe outcomes to include a dangerous pattern and rejects
 dangerous-pattern fields on non-unsafe outcomes.
 
+`kernel-queue-import` copies a reviewed minimized artifact into one of the
+curated kernel replay queues with a digest-stable `.erofs` filename:
+
+```bash
+erofs-rs kernel-queue-import \
+    --input build/finding/minimized.erofs \
+    --queue kasan \
+    --kernel-report build/finding/kernel-replay.json
+```
+
+Use `--queue general`, `--queue kasan`, `--queue kcov`, or
+`--queue regression`. The command recomputes the artifact SHA-256, optionally
+checks `--artifact-sha256`, and verifies that an attached kernel report records
+the same artifact digest before copying. Regression imports land under
+`corpus/regressions/kernel/` so fixed crash artifacts keep replaying as safe
+rejections.
+
+`kernel-buckets` merges one or more scheduled replay summaries into the stable
+`erofs-rs.kernel-bucket-db.v1` schema:
+
+```bash
+erofs-rs kernel-buckets \
+    --summary kernel-replay/summary.json \
+    --output kernel-replay/kernel-buckets.json
+```
+
+The database groups kernel reports by normalized signature and preserves queue
+profile, kernel profile, kernel git revision, artifact SHA-256, report path,
+QEMU exit code, and dangerous-pattern metadata for review.
+
 ## Continuous Integration
 
 CI is split by cost and feedback speed:
@@ -565,14 +596,17 @@ CI is split by cost and feedback speed:
   timeouts, and sanitizer diagnostics, and uploads reports, minimized corpora,
   logs, and manifests.
 - `.github/workflows/kernel-replay.yml` runs weekly and by manual dispatch. It
-  skips quickly when `corpus/crashes/kernel-candidates/` is absent or empty.
-  When curated `.erofs` candidates are present on the checked-out ref, it
-  builds the local kernel and initramfs, replays each image with
-  `make smoke-malformed`, writes `erofs-rs.kernel-replay.v1` JSON reports, and
-  uploads the QEMU logs, exit codes, individual reports, and an
-  `erofs-rs.kernel-replay-summary.v1` JSON summary with candidate and failure
-  counts. The candidate replay branch validates that summary with
-  `erofs-rs kernel-summary --summary ...` before upload.
+  scans `corpus/crashes/kernel-candidates/`,
+  `corpus/crashes/kernel-kasan-candidates/`,
+  `corpus/crashes/kernel-kcov-candidates/`, and
+  `corpus/regressions/kernel/`. Manual dispatch can download a prebuilt kernel
+  artifact containing `bzImage` and `initramfs.cpio.gz`; otherwise the workflow
+  builds the local KASAN/KCOV-capable kernel and initramfs. It replays each
+  image with `make smoke-malformed`, writes `erofs-rs.kernel-replay.v1` JSON
+  reports, uploads QEMU logs and exit codes, writes an
+  `erofs-rs.kernel-replay-summary.v1` JSON summary with queue/kernel/regression
+  metadata, and writes an `erofs-rs.kernel-bucket-db.v1` signature database.
+  The workflow validates both generated JSON files before upload.
 
 The `erofs-utils` safety checks do not prove the tools are safe. They report a
 bounded smoke result such as `tool crashes: 0`, `tool timeouts: 0`, and
@@ -586,7 +620,10 @@ for QEMU-based kernel testing. Scheduled/manual replay uses the same
 QEMU logs into `erofs-rs.kernel-replay.v1` reports so local and scheduled jobs
 share the same unsafe-kernel-output policy. The summary parser rejects
 malformed artifact digests, duplicate candidates or report paths, invalid
-status values, and mismatched candidate or failure counts.
+status values, invalid signature prefixes, and mismatched candidate or failure
+counts. The bucket parser rejects duplicate source summaries, duplicate
+signatures, unknown example sources, malformed example digests, signature
+prefix mismatches, and count mismatches.
 
 Issue and pull request templates require reproducible commands, fuzz seeds or
 artifacts when relevant, observed output, test coverage, and DCO-style

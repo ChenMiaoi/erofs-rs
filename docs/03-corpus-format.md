@@ -14,17 +14,36 @@ CI artifacts, or attached to a finding report.
 | `corpus/seeds/matrix/` | `generate-seed-matrix.sh` | Local generated output by default |
 | `corpus/mutated/` | `erofs-rs mutate` | Local generated output |
 | `corpus/crashes/userspace/` | userspace triage | Keep local or attach as finding bundles |
-| `corpus/crashes/kernel-candidates/` | kernel replay triage | Curated queue for QEMU/KASAN replay |
+| `corpus/crashes/kernel-candidates/` | kernel replay triage | Curated general queue for QEMU replay |
+| `corpus/crashes/kernel-kasan-candidates/` | kernel replay triage | Curated queue for sanitizer replay |
+| `corpus/crashes/kernel-kcov-candidates/` | kernel replay triage | Curated queue for coverage replay |
+| `corpus/regressions/kernel/` | kernel regression replay | Fixed crash artifacts that must stay safe |
 | `fuzz/corpus/`, `fuzz/artifacts/`, `fuzz/target/` | cargo-fuzz | Do not commit bulk generated output |
 
 Generated corpora should stay out of commits unless the change is a deliberate
 regression fixture or reviewed seed import. Large fuzzing outputs belong in CI
 artifacts, external storage, or finding bundles.
 
-`corpus/crashes/kernel-candidates/` is the input queue consumed by the scheduled
-kernel replay workflow. It is usually local or supplied on a replay branch. Keep
-entries small, curated, and accompanied by sidecars or finding bundles when
-they graduate from local triage to a reviewed report.
+The kernel replay queues are consumed by the scheduled kernel replay workflow.
+They are usually local or supplied on a replay branch. Keep entries small,
+curated, and accompanied by sidecars or finding bundles when they graduate from
+local triage to a reviewed report. Candidate `.erofs` images remain ignored by
+default; use `git add -f` only for intentional reviewed queue entries.
+
+Import reviewed artifacts with:
+
+```bash
+erofs-rs kernel-queue-import \
+    --input build/finding/minimized.erofs \
+    --queue regression \
+    --kernel-report build/finding/kernel-replay.json
+```
+
+The queue can be `general`, `kasan`, `kcov`, or `regression`. The command
+copies the artifact with a SHA-256-derived filename, refuses digest mismatches,
+and can validate that an attached kernel replay report refers to the same
+artifact. Use the `regression` queue after a kernel fix or mitigation is
+understood so the artifact remains in scheduled replay.
 
 ## Seed Matrix Manifest
 
@@ -320,19 +339,39 @@ must include the dangerous pattern. Non-unsafe reports must not carry a
 dangerous pattern.
 
 Scheduled kernel replay uploads `kernel-replay/summary.json` using the
-`erofs-rs.kernel-replay-summary.v1` schema. The summary records the candidate
-queue path, candidate count, failure count, and one row per candidate with the
-artifact SHA-256, QEMU exit code, replay status, report status, and report
-path. Validate it with:
+`erofs-rs.kernel-replay-summary.v1` schema. The summary records the queue set,
+kernel profile, whether replay used a source build or prebuilt artifact,
+candidate count, failure count, and one row per candidate with the queue
+profile, expected behavior, artifact SHA-256, QEMU exit code, replay status,
+report status, report path, kernel outcome, signature, dangerous pattern, and
+regression status. Validate it with:
 
 ```bash
 erofs-rs kernel-summary --summary kernel-replay/summary.json
 ```
 
 The Rust parser rejects malformed artifact digests, duplicate candidates or
-report paths, invalid status values, and mismatched candidate or failure counts
-before automation consumes the replay artifact. The scheduled workflow validates
-this summary even when the candidate queue is absent or empty.
+report paths, invalid status values, invalid signature prefixes, and mismatched
+candidate or failure counts before automation consumes the replay artifact. The
+scheduled workflow validates this summary even when all kernel queues are absent
+or empty.
+
+The same workflow writes `kernel-replay/kernel-buckets.json` using the
+`erofs-rs.kernel-bucket-db.v1` schema. Generate or merge it locally with:
+
+```bash
+erofs-rs kernel-buckets \
+    --summary kernel-replay/summary.json \
+    --output kernel-replay/kernel-buckets.json
+```
+
+The bucket database groups replay reports by normalized kernel signature across
+summary files. Each bucket records the outcome, dangerous pattern, total report
+count, number of source summaries, kernel profiles, queue profiles, first
+summary path, and examples with candidate path, artifact digest, report path,
+kernel git revision, QEMU exit code, and outcome. The parser rejects duplicate
+source summaries, duplicate signatures, malformed example digests, signature
+prefix mismatches, unknown example sources, and count mismatches.
 
 ## Finding Bundle Manifest
 

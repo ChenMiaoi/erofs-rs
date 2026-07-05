@@ -18,6 +18,17 @@
 !/corpus/crashes/kernel-candidates/
 /corpus/crashes/kernel-candidates/*
 !/corpus/crashes/kernel-candidates/README.md
+!/corpus/crashes/kernel-kasan-candidates/
+/corpus/crashes/kernel-kasan-candidates/*
+!/corpus/crashes/kernel-kasan-candidates/README.md
+!/corpus/crashes/kernel-kcov-candidates/
+/corpus/crashes/kernel-kcov-candidates/*
+!/corpus/crashes/kernel-kcov-candidates/README.md
+!/corpus/regressions/
+/corpus/regressions/*
+!/corpus/regressions/kernel/
+/corpus/regressions/kernel/*
+!/corpus/regressions/kernel/README.md
 
 # Local test dependency built from vendor/erofs-utils
 /tests/fixtures/fsck.erofs
