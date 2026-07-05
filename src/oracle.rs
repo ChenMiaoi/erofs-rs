@@ -475,6 +475,30 @@ mod tests {
     }
 
     #[test]
+    fn sanitized_fsck_crash_counts_as_interesting_disagreement() {
+        let normal = OracleCheck {
+            name: "fsck",
+            status: OracleStatus::Accepted,
+            classification: "accepted".to_string(),
+            reason: "ok".to_string(),
+        };
+        let sanitized = OracleCheck {
+            name: "sanitized_fsck",
+            status: OracleStatus::Rejected,
+            classification: "sanitizer_crash".to_string(),
+            reason: "AddressSanitizer: heap-buffer-overflow".to_string(),
+        };
+
+        let entry = compare_checks(&normal, &sanitized);
+
+        assert!(entry.disagrees);
+        assert_eq!(entry.name, "fsck_vs_sanitized_fsck");
+        assert_eq!(entry.verdict, "disagree");
+        assert_eq!(entry.left_classification, "accepted");
+        assert_eq!(entry.right_classification, "sanitizer_crash");
+    }
+
+    #[test]
     fn tolerant_parser_check_surfaces_recoverable_parse_errors() {
         let mut image = read_image(fixture("single.erofs")).unwrap();
         let report = parse_image(&image, ParseMode::FuzzTolerant).unwrap();
