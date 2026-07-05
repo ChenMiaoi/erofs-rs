@@ -210,6 +210,30 @@ fn test_tolerant_parse_records_invalid_dirent_file_type() {
 }
 
 #[test]
+fn test_tolerant_parse_records_invalid_dirent_nid() {
+    let mut img = read_image(fixture("single.erofs")).unwrap();
+    let report = parse_image(&img, ParseMode::FuzzTolerant).unwrap();
+    let dirent_offset = report
+        .dirents
+        .iter()
+        .find_map(|entry| entry.as_ref().ok().map(|dirent| dirent.offset))
+        .unwrap();
+
+    img.write_field(dirent_offset, FieldWidth::U64, u64::MAX)
+        .unwrap();
+    let report = parse_image(&img, ParseMode::FuzzTolerant).unwrap();
+
+    assert!(report.offsets_seen.contains(&dirent_offset));
+    assert!(report.errors.iter().any(|error| {
+        error.stage == ParseStage::Dirent
+            && error.offset == Some(dirent_offset)
+            && error.reason.contains("dirent nid")
+            && (error.reason.contains("inode offset overflows")
+                || error.reason.contains("does not fit host usize"))
+    }));
+}
+
+#[test]
 fn test_read_field_rejects_offset_overflow() {
     let img = Image::new(vec![0; 8]);
     let err = img

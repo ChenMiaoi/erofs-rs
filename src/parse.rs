@@ -328,6 +328,11 @@ fn locate_dirents_tolerant(
                 .checked_add(12)
                 .is_some_and(|end| end <= headers_end && end <= data.len())
             {
+                let mut valid_dirent = true;
+                if let Some(error) = validate_dirent_nid_tolerant(image, sb, offset) {
+                    dirents.push(Err(error));
+                    valid_dirent = false;
+                }
                 let file_type = data[offset + 10];
                 if file_type > 7 {
                     dirents.push(Err(ParseError::new(
@@ -335,7 +340,9 @@ fn locate_dirents_tolerant(
                         Some(offset),
                         format!("invalid dirent file_type {file_type}"),
                     )));
-                } else {
+                    valid_dirent = false;
+                }
+                if valid_dirent {
                     dirents.push(Ok(Dirent {
                         offset,
                         parent_nid: inode.nid,
@@ -355,4 +362,74 @@ fn locate_dirents_tolerant(
     }
 
     dirents
+}
+
+fn validate_dirent_nid_tolerant(
+    image: &Image,
+    sb: &Superblock,
+    offset: usize,
+) -> Option<ParseError> {
+    if offset.checked_add(8).is_none_or(|end| end > image.len()) {
+        return Some(ParseError::new(
+            ParseStage::Dirent,
+            Some(offset),
+            "dirent nid out of bounds",
+        ));
+    }
+
+    let data = image.as_bytes();
+    let nid = u64::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+        data[offset + 4],
+        data[offset + 5],
+        data[offset + 6],
+        data[offset + 7],
+    ]);
+    let nid_slot = match usize::try_from(nid) {
+        Ok(slot) => slot,
+        Err(_) => {
+            return Some(ParseError::new(
+                ParseStage::Dirent,
+                Some(offset),
+                format!("dirent nid {nid} does not fit host usize"),
+            ));
+        }
+    };
+    let inode_offset = match nid_slot
+        .checked_mul(INODE_SLOT_SIZE)
+        .and_then(|slot_offset| sb.meta_offset.checked_add(slot_offset))
+    {
+        Some(inode_offset) => inode_offset,
+        None => {
+            return Some(ParseError::new(
+                ParseStage::Dirent,
+                Some(offset),
+                format!("dirent nid {nid} inode offset overflows"),
+            ));
+        }
+    };
+
+    if inode_offset
+        .checked_add(INODE_SLOT_SIZE)
+        .is_none_or(|end| end > image.len())
+    {
+        return Some(ParseError::new(
+            ParseStage::Dirent,
+            Some(offset),
+            format!("dirent nid {nid} inode header out of bounds"),
+        ));
+    }
+
+    if !is_plausible_inode(image, inode_offset, None) {
+        return Some(ParseError::new(
+            ParseStage::Dirent,
+            Some(offset),
+            format!("dirent nid {nid} is not a plausible inode"),
+        ));
+    }
+
+    None
 }
