@@ -68,25 +68,25 @@ jobs:
 
       - name: Run structured mutations (raw checksum barrier)
         run: |
-          mkdir -p corpus/mutated/superblock corpus/mutated/inode corpus/mutated/dirent
-          ./target/release/erofs-rs mutate \
-            --input corpus/seeds/single.erofs \
-            --output-dir corpus/mutated/superblock/ \
-            --manifest corpus/mutated/superblock/manifest.txt \
-            --fsck build/erofs-utils/fsck/fsck.erofs \
-            --target superblock
-          ./target/release/erofs-rs mutate \
-            --input corpus/seeds/single.erofs \
-            --output-dir corpus/mutated/inode/ \
-            --manifest corpus/mutated/inode/manifest.txt \
-            --fsck build/erofs-utils/fsck/fsck.erofs \
-            --target inode
-          ./target/release/erofs-rs mutate \
-            --input corpus/seeds/single.erofs \
-            --output-dir corpus/mutated/dirent/ \
-            --manifest corpus/mutated/dirent/manifest.txt \
-            --fsck build/erofs-utils/fsck/fsck.erofs \
-            --target dirent
+          targets=(
+            superblock
+            inode
+            dirent
+            xattr
+            chunk
+            compression
+            device
+            cross
+          )
+          for target in "${targets[@]}"; do
+            mkdir -p "corpus/mutated/${target}"
+            ./target/release/erofs-rs mutate \
+              --input corpus/seeds/single.erofs \
+              --output-dir "corpus/mutated/${target}/" \
+              --manifest "corpus/mutated/${target}/manifest.txt" \
+              --fsck build/erofs-utils/fsck/fsck.erofs \
+              --target "$target"
+          done
 
       - name: Collect artifact corpus
         run: |
