@@ -223,6 +223,8 @@ pub struct OracleArgs {
         help = "Path to fsck.erofs"
     )]
     pub fsck: String,
+    #[arg(long, help = "Optional sanitized fsck.erofs path")]
+    pub sanitized_fsck: Option<String>,
     #[arg(long, help = "Optional path to dump.erofs")]
     pub dump: Option<String>,
     #[arg(long, help = "Optional report output file")]

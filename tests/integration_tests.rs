@@ -1010,6 +1010,7 @@ fn test_oracle_report_with_dump_check() {
     let args = erofs_rs::cli::OracleArgs {
         input: fixture("single.erofs").to_string_lossy().to_string(),
         fsck: fsck_path().to_string_lossy().to_string(),
+        sanitized_fsck: Some("/bin/true".to_string()),
         dump: Some("/bin/true".to_string()),
         report: Some(report.to_string_lossy().to_string()),
         json_report: Some(json_report.to_string_lossy().to_string()),
@@ -1023,17 +1024,19 @@ fn test_oracle_report_with_dump_check() {
     let content = fs::read_to_string(&report).unwrap();
     assert!(content.contains("rust_parser: accepted"));
     assert!(content.contains("fsck: accepted"));
+    assert!(content.contains("sanitized_fsck: accepted"));
     assert!(content.contains("dump: accepted"));
     assert!(content.contains("checksum_repair_fsck: accepted"));
     assert!(content.contains("rust_parser_vs_fsck: agree"));
+    assert!(content.contains("fsck_vs_sanitized_fsck: agree"));
     assert!(content.contains("fsck_vs_checksum_repair_fsck: agree"));
     assert!(content.contains("interesting_findings: 0"));
 
     let json: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(json_report).unwrap()).unwrap();
     assert_eq!(json["schema"], "erofs-rs.oracle-report.v1");
-    assert_eq!(json["checks"].as_array().unwrap().len(), 4);
-    assert_eq!(json["matrix"].as_array().unwrap().len(), 6);
+    assert_eq!(json["checks"].as_array().unwrap().len(), 5);
+    assert_eq!(json["matrix"].as_array().unwrap().len(), 10);
     assert_eq!(json["interesting_findings"], 0);
     assert!(
         json["checks"]
@@ -1043,11 +1046,27 @@ fn test_oracle_report_with_dump_check() {
             .any(|check| check["name"] == "checksum_repair_fsck" && check["status"] == "accepted")
     );
     assert!(
+        json["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|check| check["name"] == "sanitized_fsck" && check["status"] == "accepted")
+    );
+    assert!(
         json["matrix"]
             .as_array()
             .unwrap()
             .iter()
             .any(|entry| entry["name"] == "rust_parser_vs_fsck"
+                && entry["verdict"] == "agree"
+                && entry["disagrees"] == false)
+    );
+    assert!(
+        json["matrix"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["name"] == "fsck_vs_sanitized_fsck"
                 && entry["verdict"] == "agree"
                 && entry["disagrees"] == false)
     );

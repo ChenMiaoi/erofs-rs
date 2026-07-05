@@ -162,6 +162,21 @@ fn fsck_check(args: &OracleArgs, input: &Path, limits: ExecLimits) -> Result<Ora
     Ok(tool_result_check("fsck", &result))
 }
 
+fn sanitized_fsck_check(
+    args: &OracleArgs,
+    input: &Path,
+    limits: ExecLimits,
+) -> Result<OracleCheck> {
+    let Some(fsck) = &args.sanitized_fsck else {
+        return Ok(OracleCheck::skipped(
+            "sanitized_fsck",
+            "no sanitized fsck.erofs path supplied",
+        ));
+    };
+    let result = run_fsck_with_limits(fsck, input, &[], limits)?;
+    Ok(tool_result_check("sanitized_fsck", &result))
+}
+
 fn dump_check(args: &OracleArgs, input: &Path, limits: ExecLimits) -> Result<OracleCheck> {
     let Some(dump) = &args.dump else {
         return Ok(OracleCheck::skipped("dump", "no dump.erofs path supplied"));
@@ -329,6 +344,7 @@ pub fn run(args: &OracleArgs) -> Result<()> {
     let checks = vec![
         run_rust_parser(&image),
         fsck_check(args, input, limits).context("failed to run fsck oracle")?,
+        sanitized_fsck_check(args, input, limits).context("failed to run sanitized fsck oracle")?,
         dump_check(args, input, limits).context("failed to run dump oracle")?,
         checksum_repair_check(args, &image, limits)
             .context("failed to run checksum repair oracle")?,
