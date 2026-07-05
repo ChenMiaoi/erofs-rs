@@ -243,6 +243,9 @@ parsing, checksum repair, named-field injection, and the strict `info`
 traversal path. Generated libFuzzer corpora and artifacts under
 `fuzz/corpus/`, `fuzz/artifacts/`, and `fuzz/target/` are local byproducts and
 should not be committed unless a minimized regression is intentionally added.
+The periodic fuzzing workflow runs `cargo fuzz cmin` for each target and then
+replays the minimized corpus with `-runs=0` before collecting it as a review
+artifact.
 
 ### Seed matrix generation
 

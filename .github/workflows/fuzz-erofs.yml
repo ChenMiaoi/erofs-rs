@@ -140,6 +140,10 @@ jobs:
             cargo +nightly fuzz cmin "$target" "$corpus_dir" -- \
               -max_total_time=30 \
               2>&1 | tee "corpus/rust-fuzz/${target}/cmin.log"
+            cargo +nightly fuzz run "$target" "$corpus_dir" -- \
+              -runs=0 \
+              -artifact_prefix="${artifact_dir}/" \
+              2>&1 | tee "corpus/rust-fuzz/${target}/regression.log"
           done
 
       - name: Collect minimized Rust fuzz corpus
