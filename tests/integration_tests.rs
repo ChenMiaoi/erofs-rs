@@ -144,6 +144,28 @@ fn test_tolerant_parse_reports_valid_fixture_offsets() {
 }
 
 #[test]
+fn test_tolerant_parse_records_invalid_root_inode() {
+    let mut img = read_image(fixture("single.erofs")).unwrap();
+    let report = parse_image(&img, ParseMode::FuzzTolerant).unwrap();
+    let root_offset = report
+        .inodes
+        .iter()
+        .find_map(|entry| entry.as_ref().ok().map(|inode| inode.offset))
+        .unwrap();
+
+    img.write_field(root_offset + 0x04, FieldWidth::U16, 0x3000)
+        .unwrap();
+    let report = parse_image(&img, ParseMode::FuzzTolerant).unwrap();
+
+    assert!(report.offsets_seen.contains(&root_offset));
+    assert!(report.errors.iter().any(|error| {
+        error.stage == ParseStage::Inode
+            && error.offset == Some(root_offset)
+            && error.reason.contains("root inode is not plausible")
+    }));
+}
+
+#[test]
 fn test_tolerant_parse_records_invalid_dirent_file_type() {
     let mut img = read_image(fixture("single.erofs")).unwrap();
     let report = parse_image(&img, ParseMode::FuzzTolerant).unwrap();

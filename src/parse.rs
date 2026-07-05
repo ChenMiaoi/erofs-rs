@@ -1,6 +1,9 @@
 use crate::dirent::{Dirent, locate_dirents_in_image};
 use crate::image::{EROFS_SUPER_OFFSET, Image, Superblock};
-use crate::inode::{Inode, inode_data_offset, inode_file_size, is_directory_inode, locate_inodes};
+use crate::inode::{
+    Inode, inode_data_offset, inode_file_size, is_directory_inode, is_plausible_inode,
+    locate_inodes,
+};
 use anyhow::{Context, Result};
 use std::collections::BTreeSet;
 use std::fmt;
@@ -60,6 +63,8 @@ pub struct ParseReport {
     pub offsets_seen: BTreeSet<usize>,
 }
 
+const INODE_SLOT_SIZE: usize = 32;
+
 /// Parse an image with either strict CLI-style failure or fuzz-tolerant reporting.
 pub fn parse_image(image: &Image, mode: ParseMode) -> Result<ParseReport> {
     let mut report = ParseReport::default();
@@ -80,6 +85,16 @@ pub fn parse_image(image: &Image, mode: ParseMode) -> Result<ParseReport> {
         }
     };
     report.superblock = Some(superblock.clone());
+
+    if mode == ParseMode::FuzzTolerant {
+        if let Some(error) = validate_root_inode_tolerant(image, &superblock) {
+            if let Some(offset) = error.offset {
+                report.offsets_seen.insert(offset);
+            }
+            report.inodes.push(Err(error.clone()));
+            report.errors.push(error);
+        }
+    }
 
     let inodes = match locate_inodes(image, &superblock) {
         Ok(inodes) => inodes,
@@ -134,6 +149,53 @@ pub fn parse_image(image: &Image, mode: ParseMode) -> Result<ParseReport> {
     }
 
     Ok(report)
+}
+
+fn validate_root_inode_tolerant(image: &Image, sb: &Superblock) -> Option<ParseError> {
+    let root_slot = match usize::try_from(sb.rootnid) {
+        Ok(slot) => slot,
+        Err(_) => {
+            return Some(ParseError::new(
+                ParseStage::Inode,
+                None,
+                format!("root nid {} does not fit host usize", sb.rootnid),
+            ));
+        }
+    };
+    let root_offset = match root_slot
+        .checked_mul(INODE_SLOT_SIZE)
+        .and_then(|offset| sb.meta_offset.checked_add(offset))
+    {
+        Some(offset) => offset,
+        None => {
+            return Some(ParseError::new(
+                ParseStage::Inode,
+                None,
+                format!("root nid {} inode offset overflows", sb.rootnid),
+            ));
+        }
+    };
+
+    if root_offset
+        .checked_add(INODE_SLOT_SIZE)
+        .is_none_or(|end| end > image.len())
+    {
+        return Some(ParseError::new(
+            ParseStage::Inode,
+            Some(root_offset),
+            "root inode header out of bounds",
+        ));
+    }
+
+    if !is_plausible_inode(image, root_offset, Some(1)) {
+        return Some(ParseError::new(
+            ParseStage::Inode,
+            Some(root_offset),
+            "root inode is not plausible",
+        ));
+    }
+
+    None
 }
 
 fn locate_dirents_tolerant(
