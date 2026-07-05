@@ -330,18 +330,19 @@ erofs-rs oracle \
     --fsck build/erofs-utils/fsck/fsck.erofs \
     --sanitized-fsck build/erofs-utils-sanitized/fsck/fsck.erofs \
     --dump build/erofs-utils/dump/dump.erofs \
+    --kernel-report build/kernel-replay.json \
     --report /tmp/oracle-report.txt \
     --json-report /tmp/oracle-report.json
 ```
 
 The oracle report compares the Rust structural parser, Rust strict parser,
 Rust fuzz-tolerant parser, `fsck.erofs`, optional sanitized `fsck.erofs`,
-optional `dump.erofs -s`, and `fsck.erofs` after Rust checksum repair.
-Disagreements are reported as interesting findings so
-parser/tool/checksum/sanitizer mismatches can be triaged separately from
-ordinary malformed image rejections. `--json-report` writes the same checks,
-pairwise matrix verdicts, and interesting-finding count with the stable
-`erofs-rs.oracle-report.v1` schema for campaign automation.
+optional `dump.erofs -s`, an optional `erofs-rs.kernel-replay.v1` report, and
+`fsck.erofs` after Rust checksum repair. Disagreements are reported as
+interesting findings so parser/tool/checksum/sanitizer/kernel mismatches can be
+triaged separately from ordinary malformed image rejections. `--json-report`
+writes the same checks, pairwise matrix verdicts, and interesting-finding count
+with the stable `erofs-rs.oracle-report.v1` schema for campaign automation.
 
 ## Library usage
 

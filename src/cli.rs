@@ -265,6 +265,8 @@ pub struct OracleArgs {
     pub sanitized_fsck: Option<String>,
     #[arg(long, help = "Optional path to dump.erofs")]
     pub dump: Option<String>,
+    #[arg(long, help = "Optional kernel replay JSON report path")]
+    pub kernel_report: Option<String>,
     #[arg(long, help = "Optional report output file")]
     pub report: Option<String>,
     #[arg(long, help = "Optional machine-readable JSON report output file")]

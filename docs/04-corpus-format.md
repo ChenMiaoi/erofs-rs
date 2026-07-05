@@ -137,6 +137,7 @@ one with:
 erofs-rs oracle \
     --input corpus/seeds/single.erofs \
     --fsck build/erofs-utils/fsck/fsck.erofs \
+    --kernel-report build/kernel-replay.json \
     --json-report build/oracle-report.json
 ```
 
@@ -144,7 +145,9 @@ The report stores the input path, individual check verdicts, pairwise matrix
 rows, and the number of disagreeing rows. The Rust library parser rejects
 unknown schemas, unknown fields, empty required fields, invalid status or
 verdict values, inconsistent `disagrees` flags, and mismatched
-`interesting_findings` counts.
+`interesting_findings` counts. When `--kernel-report` is supplied, the oracle
+parses the existing `erofs-rs.kernel-replay.v1` JSON report and adds it as a
+matrix check instead of starting QEMU itself.
 
 ## Kernel Replay Report
 

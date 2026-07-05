@@ -1032,12 +1032,29 @@ fn test_oracle_report_with_dump_check() {
     let tmp = TempDir::new().unwrap();
     let report = tmp.path().join("oracle-report.txt");
     let json_report = tmp.path().join("oracle-report.json");
+    let kernel_report = tmp.path().join("kernel-replay.json");
+    fs::write(
+        &kernel_report,
+        r#"{
+  "schema": "erofs-rs.kernel-replay.v1",
+  "artifact_sha256": null,
+  "kernel_git": "0123456789abcdef",
+  "qemu_exit_code": 0,
+  "outcome": "accepted",
+  "message": "mounted and traversed successfully",
+  "signature": "kernel_accepted: mounted and traversed successfully",
+  "dangerous_pattern": null
+}
+"#,
+    )
+    .unwrap();
 
     let args = erofs_rs::cli::OracleArgs {
         input: fixture("single.erofs").to_string_lossy().to_string(),
         fsck: fsck_path().to_string_lossy().to_string(),
         sanitized_fsck: Some("/bin/true".to_string()),
         dump: Some("/bin/true".to_string()),
+        kernel_report: Some(kernel_report.to_string_lossy().to_string()),
         report: Some(report.to_string_lossy().to_string()),
         json_report: Some(json_report.to_string_lossy().to_string()),
         exec_timeout: 1,
@@ -1054,12 +1071,14 @@ fn test_oracle_report_with_dump_check() {
     assert!(content.contains("fsck: accepted"));
     assert!(content.contains("sanitized_fsck: accepted"));
     assert!(content.contains("dump: accepted"));
+    assert!(content.contains("kernel_replay: accepted"));
     assert!(content.contains("checksum_repair_fsck: accepted"));
     assert!(content.contains("rust_parser_vs_rust_strict_parser: agree"));
     assert!(content.contains("rust_strict_parser_vs_rust_tolerant_parser: agree"));
     assert!(content.contains("rust_parser_vs_rust_tolerant_parser: agree"));
     assert!(content.contains("rust_parser_vs_fsck: agree"));
     assert!(content.contains("fsck_vs_sanitized_fsck: agree"));
+    assert!(content.contains("fsck_vs_kernel_replay: agree"));
     assert!(content.contains("fsck_vs_checksum_repair_fsck: agree"));
     assert!(content.contains("interesting_findings: 0"));
 
@@ -1067,8 +1086,8 @@ fn test_oracle_report_with_dump_check() {
     erofs_rs::oracle::parse_oracle_json_report(&json_content).unwrap();
     let json: serde_json::Value = serde_json::from_str(&json_content).unwrap();
     assert_eq!(json["schema"], "erofs-rs.oracle-report.v1");
-    assert_eq!(json["checks"].as_array().unwrap().len(), 7);
-    assert_eq!(json["matrix"].as_array().unwrap().len(), 21);
+    assert_eq!(json["checks"].as_array().unwrap().len(), 8);
+    assert_eq!(json["matrix"].as_array().unwrap().len(), 28);
     assert_eq!(json["interesting_findings"], 0);
     assert!(
         json["checks"]
@@ -1099,6 +1118,13 @@ fn test_oracle_report_with_dump_check() {
             .any(|check| check["name"] == "rust_strict_parser" && check["status"] == "accepted")
     );
     assert!(
+        json["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|check| check["name"] == "kernel_replay" && check["status"] == "accepted")
+    );
+    assert!(
         json["matrix"]
             .as_array()
             .unwrap()
@@ -1113,6 +1139,15 @@ fn test_oracle_report_with_dump_check() {
             .unwrap()
             .iter()
             .any(|entry| entry["name"] == "fsck_vs_sanitized_fsck"
+                && entry["verdict"] == "agree"
+                && entry["disagrees"] == false)
+    );
+    assert!(
+        json["matrix"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["name"] == "fsck_vs_kernel_replay"
                 && entry["verdict"] == "agree"
                 && entry["disagrees"] == false)
     );

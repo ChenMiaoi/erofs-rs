@@ -4,6 +4,7 @@ use crate::dirent::locate_dirents_in_image;
 use crate::fsck::{ExecLimits, FsckResult, run_fsck_with_limits};
 use crate::image::{Image, read_image, write_image};
 use crate::inode::locate_inodes;
+use crate::kernel_replay::{KernelReplayOutcome, parse_kernel_replay_report};
 use crate::parse::{ParseMode, parse_image};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -370,6 +371,51 @@ fn dump_check(args: &OracleArgs, input: &Path, limits: ExecLimits) -> Result<Ora
     Ok(tool_result_check("dump", &result))
 }
 
+fn kernel_replay_check(args: &OracleArgs) -> Result<OracleCheck> {
+    let Some(report_path) = &args.kernel_report else {
+        return Ok(OracleCheck::skipped(
+            "kernel_replay",
+            "no kernel replay report supplied",
+        ));
+    };
+
+    let content = fs::read_to_string(report_path)
+        .with_context(|| format!("failed to read kernel replay report {report_path}"))?;
+    let report = parse_kernel_replay_report(&content)
+        .with_context(|| format!("failed to parse kernel replay report {report_path}"))?;
+    let reason = format!("{} ({})", report.message, report.signature);
+
+    match report.outcome {
+        KernelReplayOutcome::Accepted => {
+            Ok(OracleCheck::accepted("kernel_replay", "accepted", reason))
+        }
+        KernelReplayOutcome::Rejected => Ok(OracleCheck::rejected(
+            "kernel_replay",
+            "rejected_kernel",
+            reason,
+        )),
+        KernelReplayOutcome::Unsafe => {
+            let pattern = report
+                .dangerous_pattern
+                .as_deref()
+                .unwrap_or("unknown dangerous pattern");
+            Ok(OracleCheck::rejected(
+                "kernel_replay",
+                "kernel_unsafe",
+                format!("{reason}; dangerous_pattern={pattern}"),
+            ))
+        }
+        KernelReplayOutcome::Timeout => {
+            Ok(OracleCheck::rejected("kernel_replay", "timeout", reason))
+        }
+        KernelReplayOutcome::Unknown => Ok(OracleCheck::rejected(
+            "kernel_replay",
+            "kernel_unknown",
+            reason,
+        )),
+    }
+}
+
 fn checksum_repair_check(
     args: &OracleArgs,
     image: &Image,
@@ -542,6 +588,7 @@ pub fn run(args: &OracleArgs) -> Result<()> {
         fsck_check(args, input, limits).context("failed to run fsck oracle")?,
         sanitized_fsck_check(args, input, limits).context("failed to run sanitized fsck oracle")?,
         dump_check(args, input, limits).context("failed to run dump oracle")?,
+        kernel_replay_check(args).context("failed to read kernel replay oracle")?,
         checksum_repair_check(args, &image, limits)
             .context("failed to run checksum repair oracle")?,
     ];
