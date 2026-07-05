@@ -112,6 +112,16 @@ pub enum OracleJsonReportError {
     InvalidMatrixPair { entry: String, expected: String },
     #[error("oracle JSON report matrix entry {entry} references unknown check: {check}")]
     UnknownMatrixCheck { entry: String, check: String },
+    #[error(
+        "oracle JSON report matrix entry {entry} field {field} for check {check} is {actual}, expected {expected}"
+    )]
+    MatrixCheckMismatch {
+        entry: String,
+        check: String,
+        field: &'static str,
+        expected: String,
+        actual: String,
+    },
     #[error("oracle JSON report interesting_findings is {actual}, expected {expected}")]
     InterestingFindingsMismatch { expected: usize, actual: usize },
 }
@@ -141,12 +151,14 @@ pub fn validate_oracle_json_report(
     }
     let mut check_names = HashSet::new();
     let mut check_order = HashMap::new();
+    let mut checks_by_name = HashMap::new();
     for (index, check) in report.checks.iter().enumerate() {
         validate_json_check(check)?;
         if !check_names.insert(check.name.as_str()) {
             return Err(OracleJsonReportError::DuplicateCheck(check.name.clone()));
         }
         check_order.insert(check.name.as_str(), index);
+        checks_by_name.insert(check.name.as_str(), check);
     }
     let mut missing_entries = expected_matrix_entries(&report.checks);
     let mut matrix_names = HashSet::new();
@@ -159,6 +171,7 @@ pub fn validate_oracle_json_report(
         }
         require_matrix_check(entry, &entry.left, &check_names)?;
         require_matrix_check(entry, &entry.right, &check_names)?;
+        validate_matrix_check_values(entry, &checks_by_name)?;
         let expected_name = expected_matrix_entry_name(entry, &check_order)?;
         if entry.name != expected_name {
             return Err(OracleJsonReportError::InvalidMatrixPair {
@@ -224,6 +237,62 @@ fn require_matrix_check(
         return Err(OracleJsonReportError::UnknownMatrixCheck {
             entry: entry.name.clone(),
             check: check.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_matrix_check_values(
+    entry: &OracleMatrixEntry,
+    checks_by_name: &HashMap<&str, &OracleJsonCheck>,
+) -> std::result::Result<(), OracleJsonReportError> {
+    let left = checks_by_name[entry.left.as_str()];
+    require_matrix_check_value(
+        entry,
+        &entry.left,
+        "matrix.left_status",
+        &entry.left_status,
+        &left.status,
+    )?;
+    require_matrix_check_value(
+        entry,
+        &entry.left,
+        "matrix.left_classification",
+        &entry.left_classification,
+        &left.classification,
+    )?;
+
+    let right = checks_by_name[entry.right.as_str()];
+    require_matrix_check_value(
+        entry,
+        &entry.right,
+        "matrix.right_status",
+        &entry.right_status,
+        &right.status,
+    )?;
+    require_matrix_check_value(
+        entry,
+        &entry.right,
+        "matrix.right_classification",
+        &entry.right_classification,
+        &right.classification,
+    )
+}
+
+fn require_matrix_check_value(
+    entry: &OracleMatrixEntry,
+    check: &str,
+    field: &'static str,
+    actual: &str,
+    expected: &str,
+) -> std::result::Result<(), OracleJsonReportError> {
+    if actual != expected {
+        return Err(OracleJsonReportError::MatrixCheckMismatch {
+            entry: entry.name.clone(),
+            check: check.to_string(),
+            field,
+            expected: expected.to_string(),
+            actual: actual.to_string(),
         });
     }
     Ok(())
@@ -959,6 +1028,52 @@ mod tests {
             error,
             OracleJsonReportError::UnknownMatrixCheck { entry, check }
                 if entry == "rust_parser_vs_fsck" && check == "missing"
+        ));
+    }
+
+    #[test]
+    fn oracle_json_report_parser_rejects_matrix_status_mismatch() {
+        let mut report: serde_json::Value = serde_json::from_str(VALID_JSON_REPORT).unwrap();
+        report["matrix"][0]["left_status"] = serde_json::json!("rejected");
+        let report = serde_json::to_string(&report).unwrap();
+
+        let error = parse_oracle_json_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            OracleJsonReportError::MatrixCheckMismatch {
+                entry,
+                check,
+                field: "matrix.left_status",
+                expected,
+                actual,
+            } if entry == "rust_parser_vs_fsck"
+                && check == "rust_parser"
+                && expected == "accepted"
+                && actual == "rejected"
+        ));
+    }
+
+    #[test]
+    fn oracle_json_report_parser_rejects_matrix_classification_mismatch() {
+        let mut report: serde_json::Value = serde_json::from_str(VALID_JSON_REPORT).unwrap();
+        report["matrix"][0]["right_classification"] = serde_json::json!("rejected_checksum");
+        let report = serde_json::to_string(&report).unwrap();
+
+        let error = parse_oracle_json_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            OracleJsonReportError::MatrixCheckMismatch {
+                entry,
+                check,
+                field: "matrix.right_classification",
+                expected,
+                actual,
+            } if entry == "rust_parser_vs_fsck"
+                && check == "fsck"
+                && expected == "rejected_invalid"
+                && actual == "rejected_checksum"
         ));
     }
 
