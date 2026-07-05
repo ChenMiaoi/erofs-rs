@@ -208,8 +208,9 @@ rejects sidecars whose signature does not match the recorded classification
 prefix. The JSON bucket report uses the stable
 `erofs-rs.fuzz-buckets.v1` schema and records each signature's count,
 classification, outcome kind, reason, and first-seen example so campaign
-triage does not need to scrape the human report. `--exec-timeout` controls the
-per-artifact fsck timeout, and
+triage does not need to scrape the human report. Bucket parsing rejects
+signatures that do not match their classification prefix before cross-campaign
+merge. `--exec-timeout` controls the per-artifact fsck timeout, and
 `--max-output-bytes` caps the retained bytes for each fsck output stream. On
 Unix, timed-out fsck executions run in a dedicated process group and the whole
 group is killed by default; use `--no-kill-process-group` only when debugging
@@ -240,10 +241,11 @@ duplicate signatures within one report, zero counts, or conflicting
 classification/outcome metadata are rejected instead of merged silently.
 Bucket reports are parsed as the exact `erofs-rs.fuzz-buckets.v1` schema, so
 unknown fields, invalid or mismatched outcome kinds, non-actionable buckets,
-and mismatched actionable finding counts are rejected too. The Rust library
-parser also rejects unknown bucket database schemas, duplicate source reports
-or signatures, examples that reference unknown source reports, inconsistent
-outcome metadata, and inconsistent per-source bucket counts.
+signature prefix mismatches, and mismatched actionable finding counts are
+rejected too. The Rust library parser also rejects unknown bucket database
+schemas, duplicate source reports or signatures, examples that reference
+unknown source reports, inconsistent outcome metadata, and inconsistent
+per-source bucket counts.
 
 ### `replay` – sidecar-based reproduction
 

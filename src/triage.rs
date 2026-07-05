@@ -113,6 +113,11 @@ pub enum BucketDatabaseError {
     },
     #[error("bucket database classification {classification} is not actionable")]
     NonActionableOutcome { classification: String },
+    #[error("bucket database signature {signature} does not match classification {classification}")]
+    SignatureMismatch {
+        classification: String,
+        signature: String,
+    },
     #[error("bucket database signature contains duplicate example source: {0}")]
     DuplicateExampleSource(String),
     #[error("bucket database example references unknown source report: {0}")]
@@ -152,6 +157,13 @@ pub enum FuzzBucketReportError {
     },
     #[error("fuzz bucket report classification {classification} is not actionable")]
     NonActionableOutcome { classification: String },
+    #[error(
+        "fuzz bucket report signature {signature} does not match classification {classification}"
+    )]
+    SignatureMismatch {
+        classification: String,
+        signature: String,
+    },
     #[error("fuzz bucket report count mismatch for {field}: expected {expected}, actual {actual}")]
     CountMismatch {
         field: &'static str,
@@ -209,11 +221,25 @@ fn validate_fuzz_bucket(bucket: &FuzzBucket) -> std::result::Result<(), FuzzBuck
     require_bucket_report_nonempty("buckets.signature", &bucket.signature)?;
     require_bucket_report_nonempty("buckets.classification", &bucket.classification)?;
     require_bucket_report_nonempty("buckets.outcome_kind", &bucket.outcome_kind)?;
+    validate_bucket_report_signature(&bucket.classification, &bucket.signature)?;
     validate_fuzz_bucket_outcome_kind(&bucket.classification, &bucket.outcome_kind)?;
     require_bucket_report_nonempty("buckets.example_seed_name", &bucket.example_seed_name)?;
     require_bucket_report_nonempty("buckets.reason", &bucket.reason)?;
     if bucket.count == 0 {
         return Err(FuzzBucketReportError::ZeroCount(bucket.signature.clone()));
+    }
+    Ok(())
+}
+
+fn validate_bucket_report_signature(
+    classification: &str,
+    signature: &str,
+) -> std::result::Result<(), FuzzBucketReportError> {
+    if !signature_matches_classification(classification, signature) {
+        return Err(FuzzBucketReportError::SignatureMismatch {
+            classification: classification.to_string(),
+            signature: signature.to_string(),
+        });
     }
     Ok(())
 }
@@ -340,6 +366,7 @@ fn validate_bucket_database_entry<'a>(
     require_database_nonempty("buckets.signature", &bucket.signature)?;
     require_database_nonempty("buckets.classification", &bucket.classification)?;
     require_database_nonempty("buckets.outcome_kind", &bucket.outcome_kind)?;
+    validate_database_signature(&bucket.classification, &bucket.signature)?;
     validate_database_outcome_kind(&bucket.classification, &bucket.outcome_kind)?;
     if bucket.total_count == 0 {
         return Err(BucketDatabaseError::CountMismatch {
@@ -400,6 +427,24 @@ fn validate_bucket_database_entry<'a>(
     }
 
     Ok(())
+}
+
+fn validate_database_signature(
+    classification: &str,
+    signature: &str,
+) -> std::result::Result<(), BucketDatabaseError> {
+    if !signature_matches_classification(classification, signature) {
+        return Err(BucketDatabaseError::SignatureMismatch {
+            classification: classification.to_string(),
+            signature: signature.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn signature_matches_classification(classification: &str, signature: &str) -> bool {
+    let signature_prefix = format!("{classification}: ");
+    signature == classification || signature.starts_with(&signature_prefix)
 }
 
 fn validate_database_outcome_kind(
@@ -857,6 +902,31 @@ mod tests {
     }
 
     #[test]
+    fn fuzz_bucket_report_parser_rejects_signature_mismatch() {
+        let mut report = fuzz_report(
+            11,
+            vec![bucket(
+                "accepted_with_errors: shared",
+                "accepted_with_errors",
+                1,
+            )],
+            "fuzz-report.txt".to_string(),
+        );
+        report.buckets[0].signature = "rejected_crash: SIGSEGV".to_string();
+
+        let error = validate_fuzz_bucket_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            FuzzBucketReportError::SignatureMismatch {
+                classification,
+                signature,
+            } if classification == "accepted_with_errors"
+                && signature == "rejected_crash: SIGSEGV"
+        ));
+    }
+
+    #[test]
     fn fuzz_bucket_report_parser_rejects_non_actionable_bucket() {
         let report = fuzz_report(
             11,
@@ -958,6 +1028,32 @@ mod tests {
             } if classification == "rejected_crash"
                 && outcome_kind == "interesting_semantic"
                 && expected == "unsafe_crash"
+        ));
+    }
+
+    #[test]
+    fn bucket_database_parser_rejects_signature_mismatch() {
+        let mut database = build_bucket_database(vec![report(
+            "campaign/fuzz-buckets.json",
+            11,
+            vec![bucket(
+                "accepted_with_errors: shared",
+                "accepted_with_errors",
+                1,
+            )],
+        )])
+        .unwrap();
+        database.buckets[0].signature = "rejected_crash: SIGSEGV".to_string();
+
+        let error = validate_bucket_database(&database).unwrap_err();
+
+        assert!(matches!(
+            error,
+            BucketDatabaseError::SignatureMismatch {
+                classification,
+                signature,
+            } if classification == "accepted_with_errors"
+                && signature == "rejected_crash: SIGSEGV"
         ));
     }
 
