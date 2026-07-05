@@ -498,6 +498,23 @@ struct CrossFieldMutation {
     new_value: u64,
 }
 
+#[derive(Clone, Copy)]
+struct FieldWrite {
+    abs_offset: usize,
+    width: FieldWidth,
+    value: u64,
+}
+
+struct XattrMutation {
+    output_name: String,
+    target_desc: String,
+    field_name: &'static str,
+    mutation_name: &'static str,
+    value_width: FieldWidth,
+    value: u64,
+    writes: Vec<FieldWrite>,
+}
+
 fn seed_name(input: &str) -> String {
     Path::new(input)
         .file_stem()
@@ -556,6 +573,64 @@ fn add_cross_field_mutation(
             "0x{:0width$X}",
             mutation.new_value,
             width = mutation.width.bytes() * 2
+        ),
+        parser_outcome,
+        classification: classification.to_string(),
+        reason: reason.to_string(),
+    });
+
+    println!(
+        "[{classification:>20}] {:>15}.{:<25} -> {reason}",
+        mutation.field_name, mutation.mutation_name
+    );
+
+    Ok(true)
+}
+
+fn add_xattr_mutation(
+    entries: &mut Vec<MutatedEntry>,
+    image: &Image,
+    args: &MutateArgs,
+    mutation: XattrMutation,
+) -> Result<bool> {
+    let mut changed = false;
+    for write in &mutation.writes {
+        if image.read_field(write.abs_offset, write.width)? != write.value {
+            changed = true;
+            break;
+        }
+    }
+    if !changed {
+        return Ok(false);
+    }
+
+    let mut mutated = image.clone();
+    for write in &mutation.writes {
+        mutated.write_field(write.abs_offset, write.width, write.value)?;
+    }
+
+    if args.fix_checksum {
+        fix_checksum(&mut mutated)?;
+    }
+
+    let output_path = Path::new(&args.output_dir).join(&mutation.output_name);
+    write_image(&output_path, &mutated)?;
+
+    let result = run_fsck(&args.fsck, &output_path, &[])?;
+    let (classification, reason) =
+        classify_fsck_result(result.exit_code, &result.stderr, &result.stdout);
+    let parser_outcome = parser_outcome(&mutated);
+
+    entries.push(MutatedEntry {
+        output_name: mutation.output_name,
+        family: "xattr".to_string(),
+        target_desc: mutation.target_desc,
+        field_name: mutation.field_name.to_string(),
+        mutation_name: mutation.mutation_name.to_string(),
+        value_hex: format!(
+            "0x{:0width$X}",
+            mutation.value,
+            width = mutation.value_width.bytes() * 2
         ),
         parser_outcome,
         classification: classification.to_string(),
@@ -755,6 +830,170 @@ fn mutate_dirents(image: &Image, args: &MutateArgs) -> Result<Vec<MutatedEntry>>
                 );
             }
         }
+    }
+
+    Ok(entries)
+}
+
+fn mutate_xattrs(image: &Image, args: &MutateArgs) -> Result<Vec<MutatedEntry>> {
+    let seed = seed_name(&args.input);
+    let sb = image.superblock()?;
+    let inodes = locate_inodes(image, &sb)?;
+    let mut entries = Vec::new();
+
+    println!("Found {} inodes for xattr mutations", inodes.len());
+
+    for inode in &inodes {
+        let inode_size = if is_extended_inode(image, inode.offset)? {
+            64usize
+        } else {
+            32usize
+        };
+        let i_xattr_offset = inode
+            .offset
+            .checked_add(0x02)
+            .ok_or_else(|| anyhow::anyhow!("inode xattr count offset overflows"))?;
+        let xattr_offset = inode
+            .offset
+            .checked_add(inode_size)
+            .ok_or_else(|| anyhow::anyhow!("inline xattr header offset overflows"))?;
+        if xattr_offset
+            .checked_add(12)
+            .is_none_or(|end| end > image.len())
+        {
+            continue;
+        }
+
+        let header_writes = vec![FieldWrite {
+            abs_offset: i_xattr_offset,
+            width: FieldWidth::U16,
+            value: 1,
+        }];
+        let _ = add_xattr_mutation(
+            &mut entries,
+            image,
+            args,
+            XattrMutation {
+                output_name: format!("{seed}_nid{}_xattr_advertise_header.erofs", inode.nid),
+                target_desc: inode.desc.clone(),
+                field_name: "i_xattr_icount",
+                mutation_name: "advertise_header",
+                value_width: FieldWidth::U16,
+                value: 1,
+                writes: header_writes,
+            },
+        )?;
+
+        let shared_slot_writes = vec![FieldWrite {
+            abs_offset: i_xattr_offset,
+            width: FieldWidth::U16,
+            value: 2,
+        }];
+        let _ = add_xattr_mutation(
+            &mut entries,
+            image,
+            args,
+            XattrMutation {
+                output_name: format!("{seed}_nid{}_xattr_advertise_shared_slot.erofs", inode.nid),
+                target_desc: inode.desc.clone(),
+                field_name: "i_xattr_icount",
+                mutation_name: "advertise_shared_slot",
+                value_width: FieldWidth::U16,
+                value: 2,
+                writes: shared_slot_writes,
+            },
+        )?;
+
+        let shared_count_offset = xattr_offset
+            .checked_add(0x04)
+            .ok_or_else(|| anyhow::anyhow!("inline xattr shared count offset overflows"))?;
+        let shared_count_writes = vec![
+            FieldWrite {
+                abs_offset: i_xattr_offset,
+                width: FieldWidth::U16,
+                value: 1,
+            },
+            FieldWrite {
+                abs_offset: shared_count_offset,
+                width: FieldWidth::U8,
+                value: 1,
+            },
+        ];
+        let _ = add_xattr_mutation(
+            &mut entries,
+            image,
+            args,
+            XattrMutation {
+                output_name: format!("{seed}_nid{}_xattr_shared_count_exceeds.erofs", inode.nid),
+                target_desc: inode.desc.clone(),
+                field_name: "h_shared_count",
+                mutation_name: "shared_count_exceeds_region",
+                value_width: FieldWidth::U8,
+                value: 1,
+                writes: shared_count_writes,
+            },
+        )?;
+
+        let reserved_offset = xattr_offset
+            .checked_add(0x05)
+            .ok_or_else(|| anyhow::anyhow!("inline xattr reserved offset overflows"))?;
+        let reserved_writes = vec![
+            FieldWrite {
+                abs_offset: i_xattr_offset,
+                width: FieldWidth::U16,
+                value: 1,
+            },
+            FieldWrite {
+                abs_offset: reserved_offset,
+                width: FieldWidth::U8,
+                value: 0xFF,
+            },
+        ];
+        let _ = add_xattr_mutation(
+            &mut entries,
+            image,
+            args,
+            XattrMutation {
+                output_name: format!("{seed}_nid{}_xattr_reserved_nonzero.erofs", inode.nid),
+                target_desc: inode.desc.clone(),
+                field_name: "h_reserved",
+                mutation_name: "reserved_nonzero",
+                value_width: FieldWidth::U8,
+                value: 0xFF,
+                writes: reserved_writes,
+            },
+        )?;
+
+        let name_filter_writes = vec![
+            FieldWrite {
+                abs_offset: i_xattr_offset,
+                width: FieldWidth::U16,
+                value: 1,
+            },
+            FieldWrite {
+                abs_offset: xattr_offset,
+                width: FieldWidth::U32,
+                value: 0,
+            },
+        ];
+        let _ = add_xattr_mutation(
+            &mut entries,
+            image,
+            args,
+            XattrMutation {
+                output_name: format!("{seed}_nid{}_xattr_zero_name_filter.erofs", inode.nid),
+                target_desc: inode.desc.clone(),
+                field_name: "h_name_filter",
+                mutation_name: "zero_name_filter",
+                value_width: FieldWidth::U32,
+                value: 0,
+                writes: name_filter_writes,
+            },
+        )?;
+    }
+
+    if entries.is_empty() {
+        println!("WARNING: No xattr mutations generated. Skipping.");
     }
 
     Ok(entries)
@@ -1027,15 +1266,17 @@ pub fn run(args: &MutateArgs) -> Result<()> {
         "superblock" => all_entries.extend(mutate_superblock(&image, args)?),
         "inode" => all_entries.extend(mutate_inodes(&image, args)?),
         "dirent" => all_entries.extend(mutate_dirents(&image, args)?),
+        "xattr" => all_entries.extend(mutate_xattrs(&image, args)?),
         "cross" => all_entries.extend(mutate_cross_fields(&image, args)?),
         "all" => {
             all_entries.extend(mutate_superblock(&image, args)?);
             all_entries.extend(mutate_inodes(&image, args)?);
             all_entries.extend(mutate_dirents(&image, args)?);
+            all_entries.extend(mutate_xattrs(&image, args)?);
             all_entries.extend(mutate_cross_fields(&image, args)?);
         }
         _ => bail!(
-            "unknown mutation target: {} (expected superblock|inode|dirent|cross|all)",
+            "unknown mutation target: {} (expected superblock|inode|dirent|xattr|cross|all)",
             args.target
         ),
     }
