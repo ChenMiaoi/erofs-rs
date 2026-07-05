@@ -11,11 +11,13 @@ use std::fs;
 use std::path::Path;
 
 const EROFS_FEATURE_INCOMPAT_48BIT: u32 = 0x00000080;
+const EROFS_FEATURE_INCOMPAT_DEVICE_TABLE: u64 = 0x00000008;
 const EROFS_INODE_COMPRESSED_FULL: u64 = 1;
 const EROFS_INODE_COMPRESSED_COMPACT: u64 = 3;
 const EROFS_INODE_CHUNK_BASED: u64 = 4;
 const EROFS_CHUNK_FORMAT_INDEXES: u64 = 0x0020;
 const EROFS_CHUNK_FORMAT_UNSUPPORTED_BIT: u64 = 0x0080;
+const EROFS_DEVT_SLOT_SIZE: usize = 128;
 const Z_EROFS_ADVISE_BIG_PCLUSTER_1: u64 = 0x0002;
 const Z_EROFS_ADVISE_UNSUPPORTED_BIT: u64 = 0x8000;
 const Z_EROFS_CLUSTERBITS_RESERVED_BIT: u64 = 0x10;
@@ -545,6 +547,16 @@ struct CompressionMutation {
     writes: Vec<FieldWrite>,
 }
 
+struct DeviceMutation {
+    output_name: String,
+    target_desc: String,
+    field_name: &'static str,
+    mutation_name: &'static str,
+    value_width: FieldWidth,
+    value: u64,
+    writes: Vec<FieldWrite>,
+}
+
 fn seed_name(input: &str) -> String {
     Path::new(input)
         .file_stem()
@@ -780,6 +792,64 @@ fn add_compression_mutation(
     entries.push(MutatedEntry {
         output_name: mutation.output_name,
         family: "compression".to_string(),
+        target_desc: mutation.target_desc,
+        field_name: mutation.field_name.to_string(),
+        mutation_name: mutation.mutation_name.to_string(),
+        value_hex: format!(
+            "0x{:0width$X}",
+            mutation.value,
+            width = mutation.value_width.bytes() * 2
+        ),
+        parser_outcome,
+        classification: classification.to_string(),
+        reason: reason.to_string(),
+    });
+
+    println!(
+        "[{classification:>20}] {:>15}.{:<25} -> {reason}",
+        mutation.field_name, mutation.mutation_name
+    );
+
+    Ok(true)
+}
+
+fn add_device_mutation(
+    entries: &mut Vec<MutatedEntry>,
+    image: &Image,
+    args: &MutateArgs,
+    mutation: DeviceMutation,
+) -> Result<bool> {
+    let mut changed = false;
+    for write in &mutation.writes {
+        if image.read_field(write.abs_offset, write.width)? != write.value {
+            changed = true;
+            break;
+        }
+    }
+    if !changed {
+        return Ok(false);
+    }
+
+    let mut mutated = image.clone();
+    for write in &mutation.writes {
+        mutated.write_field(write.abs_offset, write.width, write.value)?;
+    }
+
+    if args.fix_checksum {
+        fix_checksum(&mut mutated)?;
+    }
+
+    let output_path = Path::new(&args.output_dir).join(&mutation.output_name);
+    write_image(&output_path, &mutated)?;
+
+    let result = run_fsck(&args.fsck, &output_path, &[])?;
+    let (classification, reason) =
+        classify_fsck_result(result.exit_code, &result.stderr, &result.stdout);
+    let parser_outcome = parser_outcome(&mutated);
+
+    entries.push(MutatedEntry {
+        output_name: mutation.output_name,
+        family: "device".to_string(),
         target_desc: mutation.target_desc,
         field_name: mutation.field_name.to_string(),
         mutation_name: mutation.mutation_name.to_string(),
@@ -1379,6 +1449,242 @@ fn mutate_compressions(image: &Image, args: &MutateArgs) -> Result<Vec<MutatedEn
     Ok(entries)
 }
 
+fn mutate_devices(image: &Image, args: &MutateArgs) -> Result<Vec<MutatedEntry>> {
+    let seed = seed_name(&args.input);
+    let sb = image.superblock()?;
+    let mut entries = Vec::new();
+
+    let slot_offset = EROFS_SUPER_OFFSET
+        .checked_add(2 * EROFS_DEVT_SLOT_SIZE)
+        .ok_or_else(|| anyhow::anyhow!("device table slot offset overflows"))?;
+    if slot_offset
+        .checked_add(EROFS_DEVT_SLOT_SIZE)
+        .is_none_or(|end| end > image.len())
+    {
+        println!("WARNING: No room for device table slot mutations. Skipping.");
+        return Ok(entries);
+    }
+
+    let slot_number = u64::try_from(slot_offset / EROFS_DEVT_SLOT_SIZE)
+        .map_err(|_| anyhow::anyhow!("device table slot number does not fit u64"))?;
+    let feature_offset = EROFS_SUPER_OFFSET
+        .checked_add(0x50)
+        .ok_or_else(|| anyhow::anyhow!("feature_incompat offset overflows"))?;
+    let extra_devices_offset = EROFS_SUPER_OFFSET
+        .checked_add(0x56)
+        .ok_or_else(|| anyhow::anyhow!("extra_devices offset overflows"))?;
+    let devt_slotoff_offset = EROFS_SUPER_OFFSET
+        .checked_add(0x58)
+        .ok_or_else(|| anyhow::anyhow!("devt_slotoff offset overflows"))?;
+    let tag_offset = slot_offset;
+    let blocks_lo_offset = slot_offset
+        .checked_add(0x40)
+        .ok_or_else(|| anyhow::anyhow!("device blocks_lo offset overflows"))?;
+    let uniaddr_lo_offset = slot_offset
+        .checked_add(0x44)
+        .ok_or_else(|| anyhow::anyhow!("device uniaddr_lo offset overflows"))?;
+    let blocks_hi_offset = slot_offset
+        .checked_add(0x48)
+        .ok_or_else(|| anyhow::anyhow!("device blocks_hi offset overflows"))?;
+    let uniaddr_hi_offset = slot_offset
+        .checked_add(0x4A)
+        .ok_or_else(|| anyhow::anyhow!("device uniaddr_hi offset overflows"))?;
+    let reserved_offset = slot_offset
+        .checked_add(0x4C)
+        .ok_or_else(|| anyhow::anyhow!("device reserved offset overflows"))?;
+
+    let original_feature = image.read_field(feature_offset, FieldWidth::U32)?;
+    let device_feature = original_feature | EROFS_FEATURE_INCOMPAT_DEVICE_TABLE;
+    let primary_blocks = u64::from(sb.blocks_lo);
+    let device_prefix = || {
+        vec![
+            FieldWrite {
+                abs_offset: feature_offset,
+                width: FieldWidth::U32,
+                value: device_feature,
+            },
+            FieldWrite {
+                abs_offset: extra_devices_offset,
+                width: FieldWidth::U16,
+                value: 1,
+            },
+            FieldWrite {
+                abs_offset: devt_slotoff_offset,
+                width: FieldWidth::U16,
+                value: slot_number,
+            },
+            FieldWrite {
+                abs_offset: tag_offset,
+                width: FieldWidth::U64,
+                value: u64::from(b'e'),
+            },
+            FieldWrite {
+                abs_offset: blocks_lo_offset,
+                width: FieldWidth::U32,
+                value: 1,
+            },
+            FieldWrite {
+                abs_offset: uniaddr_lo_offset,
+                width: FieldWidth::U32,
+                value: primary_blocks,
+            },
+            FieldWrite {
+                abs_offset: blocks_hi_offset,
+                width: FieldWidth::U16,
+                value: 0,
+            },
+            FieldWrite {
+                abs_offset: uniaddr_hi_offset,
+                width: FieldWidth::U16,
+                value: 0,
+            },
+        ]
+    };
+
+    let _ = add_device_mutation(
+        &mut entries,
+        image,
+        args,
+        DeviceMutation {
+            output_name: format!("{seed}_device_advertise_table.erofs"),
+            target_desc: "device_table".to_string(),
+            field_name: "extra_devices",
+            mutation_name: "advertise_one_device",
+            value_width: FieldWidth::U16,
+            value: 1,
+            writes: device_prefix(),
+        },
+    )?;
+
+    let mut empty_tag_writes = device_prefix();
+    empty_tag_writes.push(FieldWrite {
+        abs_offset: tag_offset,
+        width: FieldWidth::U64,
+        value: 0,
+    });
+    let _ = add_device_mutation(
+        &mut entries,
+        image,
+        args,
+        DeviceMutation {
+            output_name: format!("{seed}_device_empty_tag.erofs"),
+            target_desc: "device_table".to_string(),
+            field_name: "tag",
+            mutation_name: "empty_tag",
+            value_width: FieldWidth::U64,
+            value: 0,
+            writes: empty_tag_writes,
+        },
+    )?;
+
+    let mut zero_blocks_writes = device_prefix();
+    zero_blocks_writes.push(FieldWrite {
+        abs_offset: blocks_lo_offset,
+        width: FieldWidth::U32,
+        value: 0,
+    });
+    let _ = add_device_mutation(
+        &mut entries,
+        image,
+        args,
+        DeviceMutation {
+            output_name: format!("{seed}_device_zero_blocks.erofs"),
+            target_desc: "device_table".to_string(),
+            field_name: "blocks_lo",
+            mutation_name: "zero_blocks",
+            value_width: FieldWidth::U32,
+            value: 0,
+            writes: zero_blocks_writes,
+        },
+    )?;
+
+    let mut reserved_writes = device_prefix();
+    reserved_writes.push(FieldWrite {
+        abs_offset: reserved_offset,
+        width: FieldWidth::U8,
+        value: 0xFF,
+    });
+    let _ = add_device_mutation(
+        &mut entries,
+        image,
+        args,
+        DeviceMutation {
+            output_name: format!("{seed}_device_reserved_nonzero.erofs"),
+            target_desc: "device_table".to_string(),
+            field_name: "reserved",
+            mutation_name: "reserved_nonzero",
+            value_width: FieldWidth::U8,
+            value: 0xFF,
+            writes: reserved_writes,
+        },
+    )?;
+
+    let out_of_bounds_slot = image
+        .len()
+        .checked_add(EROFS_DEVT_SLOT_SIZE - 1)
+        .map(|len| len / EROFS_DEVT_SLOT_SIZE)
+        .filter(|slot| *slot <= u16::MAX as usize);
+    if let Some(out_of_bounds_slot) = out_of_bounds_slot {
+        let _ = add_device_mutation(
+            &mut entries,
+            image,
+            args,
+            DeviceMutation {
+                output_name: format!("{seed}_device_slot_out_of_bounds.erofs"),
+                target_desc: "device_table".to_string(),
+                field_name: "devt_slotoff",
+                mutation_name: "slot_out_of_bounds",
+                value_width: FieldWidth::U16,
+                value: out_of_bounds_slot as u64,
+                writes: vec![
+                    FieldWrite {
+                        abs_offset: feature_offset,
+                        width: FieldWidth::U32,
+                        value: device_feature,
+                    },
+                    FieldWrite {
+                        abs_offset: extra_devices_offset,
+                        width: FieldWidth::U16,
+                        value: 1,
+                    },
+                    FieldWrite {
+                        abs_offset: devt_slotoff_offset,
+                        width: FieldWidth::U16,
+                        value: out_of_bounds_slot as u64,
+                    },
+                ],
+            },
+        )?;
+    }
+
+    let mut too_many_writes = device_prefix();
+    too_many_writes.push(FieldWrite {
+        abs_offset: extra_devices_offset,
+        width: FieldWidth::U16,
+        value: 0xFFFF,
+    });
+    let _ = add_device_mutation(
+        &mut entries,
+        image,
+        args,
+        DeviceMutation {
+            output_name: format!("{seed}_device_too_many_slots.erofs"),
+            target_desc: "device_table".to_string(),
+            field_name: "extra_devices",
+            mutation_name: "too_many_slots",
+            value_width: FieldWidth::U16,
+            value: 0xFFFF,
+            writes: too_many_writes,
+        },
+    )?;
+
+    if entries.is_empty() {
+        println!("WARNING: No device mutations generated. Skipping.");
+    }
+
+    Ok(entries)
+}
+
 fn mutate_xattrs(image: &Image, args: &MutateArgs) -> Result<Vec<MutatedEntry>> {
     let seed = seed_name(&args.input);
     let sb = image.superblock()?;
@@ -1813,6 +2119,7 @@ pub fn run(args: &MutateArgs) -> Result<()> {
         "xattr" => all_entries.extend(mutate_xattrs(&image, args)?),
         "chunk" => all_entries.extend(mutate_chunks(&image, args)?),
         "compression" => all_entries.extend(mutate_compressions(&image, args)?),
+        "device" => all_entries.extend(mutate_devices(&image, args)?),
         "cross" => all_entries.extend(mutate_cross_fields(&image, args)?),
         "all" => {
             all_entries.extend(mutate_superblock(&image, args)?);
@@ -1821,10 +2128,11 @@ pub fn run(args: &MutateArgs) -> Result<()> {
             all_entries.extend(mutate_xattrs(&image, args)?);
             all_entries.extend(mutate_chunks(&image, args)?);
             all_entries.extend(mutate_compressions(&image, args)?);
+            all_entries.extend(mutate_devices(&image, args)?);
             all_entries.extend(mutate_cross_fields(&image, args)?);
         }
         _ => bail!(
-            "unknown mutation target: {} (expected superblock|inode|dirent|xattr|chunk|compression|cross|all)",
+            "unknown mutation target: {} (expected superblock|inode|dirent|xattr|chunk|compression|device|cross|all)",
             args.target
         ),
     }
