@@ -2,6 +2,7 @@ use crate::cli::KernelReportArgs;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::fs;
 use std::fs::File;
 use std::io::Read;
@@ -9,6 +10,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 pub const KERNEL_REPLAY_REPORT_SCHEMA: &str = "erofs-rs.kernel-replay.v1";
+pub const KERNEL_REPLAY_SUMMARY_SCHEMA: &str = "erofs-rs.kernel-replay-summary.v1";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -33,6 +35,27 @@ pub struct KernelReplayReport {
     pub dangerous_pattern: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct KernelReplaySummary {
+    pub schema: String,
+    pub queue: String,
+    pub candidate_count: usize,
+    pub failure_count: usize,
+    pub reports: Vec<KernelReplaySummaryEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct KernelReplaySummaryEntry {
+    pub candidate: String,
+    pub artifact_sha256: String,
+    pub qemu_exit_code: i32,
+    pub replay_status: String,
+    pub report_status: String,
+    pub report_path: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct KernelReplayVerdict {
     pub outcome: KernelReplayOutcome,
@@ -47,6 +70,8 @@ pub enum KernelReplayReportError {
     Decode(#[from] serde_json::Error),
     #[error("unsupported kernel replay report schema: {0}")]
     UnsupportedSchema(String),
+    #[error("unsupported kernel replay summary schema: {0}")]
+    UnsupportedSummarySchema(String),
     #[error("kernel replay report field {0} is empty")]
     EmptyField(&'static str),
     #[error("kernel replay report field {field} has invalid SHA-256 digest: {sha256}")]
@@ -59,6 +84,20 @@ pub enum KernelReplayReportError {
     InvalidSignaturePrefix {
         outcome: KernelReplayOutcome,
         signature: String,
+    },
+    #[error("kernel replay summary field {field} has invalid status: {status}")]
+    InvalidSummaryStatus { field: &'static str, status: String },
+    #[error("kernel replay summary contains duplicate candidate: {0}")]
+    DuplicateSummaryCandidate(String),
+    #[error("kernel replay summary contains duplicate report path: {0}")]
+    DuplicateSummaryReportPath(String),
+    #[error(
+        "kernel replay summary count mismatch for {field}: expected {expected}, actual {actual}"
+    )]
+    SummaryCountMismatch {
+        field: &'static str,
+        expected: usize,
+        actual: usize,
     },
 }
 
@@ -87,6 +126,14 @@ pub fn parse_kernel_replay_report(
     let report: KernelReplayReport = serde_json::from_str(content)?;
     validate_kernel_replay_report(&report)?;
     Ok(report)
+}
+
+pub fn parse_kernel_replay_summary(
+    content: &str,
+) -> std::result::Result<KernelReplaySummary, KernelReplayReportError> {
+    let summary: KernelReplaySummary = serde_json::from_str(content)?;
+    validate_kernel_replay_summary(&summary)?;
+    Ok(summary)
 }
 
 pub fn validate_kernel_replay_report(
@@ -127,6 +174,89 @@ pub fn validate_kernel_replay_report(
         (_, None) => {}
     }
     Ok(())
+}
+
+pub fn validate_kernel_replay_summary(
+    summary: &KernelReplaySummary,
+) -> std::result::Result<(), KernelReplayReportError> {
+    if summary.schema != KERNEL_REPLAY_SUMMARY_SCHEMA {
+        return Err(KernelReplayReportError::UnsupportedSummarySchema(
+            summary.schema.clone(),
+        ));
+    }
+    require_nonempty("queue", &summary.queue)?;
+    let mut candidates = HashSet::new();
+    let mut report_paths = HashSet::new();
+    let mut failures = 0usize;
+    for report in &summary.reports {
+        validate_summary_entry(report)?;
+        if !candidates.insert(report.candidate.as_str()) {
+            return Err(KernelReplayReportError::DuplicateSummaryCandidate(
+                report.candidate.clone(),
+            ));
+        }
+        if !report_paths.insert(report.report_path.as_str()) {
+            return Err(KernelReplayReportError::DuplicateSummaryReportPath(
+                report.report_path.clone(),
+            ));
+        }
+        if report.replay_status != "rejected" || report.report_status != "written" {
+            failures = failures.saturating_add(1);
+        }
+    }
+    require_summary_count(
+        "candidate_count",
+        summary.reports.len(),
+        summary.candidate_count,
+    )?;
+    require_summary_count("failure_count", failures, summary.failure_count)
+}
+
+fn validate_summary_entry(
+    entry: &KernelReplaySummaryEntry,
+) -> std::result::Result<(), KernelReplayReportError> {
+    require_nonempty("reports.candidate", &entry.candidate)?;
+    require_sha256("reports.artifact_sha256", &entry.artifact_sha256)?;
+    require_summary_status(
+        "reports.replay_status",
+        &entry.replay_status,
+        &["rejected", "needs-triage"],
+    )?;
+    require_summary_status(
+        "reports.report_status",
+        &entry.report_status,
+        &["written", "failed"],
+    )?;
+    require_nonempty("reports.report_path", &entry.report_path)
+}
+
+fn require_summary_status(
+    field: &'static str,
+    status: &str,
+    allowed: &[&str],
+) -> std::result::Result<(), KernelReplayReportError> {
+    if allowed.contains(&status) {
+        return Ok(());
+    }
+    Err(KernelReplayReportError::InvalidSummaryStatus {
+        field,
+        status: status.to_string(),
+    })
+}
+
+fn require_summary_count(
+    field: &'static str,
+    expected: usize,
+    actual: usize,
+) -> std::result::Result<(), KernelReplayReportError> {
+    if expected == actual {
+        return Ok(());
+    }
+    Err(KernelReplayReportError::SummaryCountMismatch {
+        field,
+        expected,
+        actual,
+    })
 }
 
 fn signature_prefix(outcome: &KernelReplayOutcome) -> &'static str {
@@ -362,8 +492,9 @@ fn normalize_signature_detail(detail: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        KERNEL_REPLAY_REPORT_SCHEMA, KernelReplayOutcome, KernelReplayReportError,
-        build_kernel_replay_report, classify_dmesg_text, parse_kernel_replay_report, run,
+        KERNEL_REPLAY_REPORT_SCHEMA, KERNEL_REPLAY_SUMMARY_SCHEMA, KernelReplayOutcome,
+        KernelReplayReportError, build_kernel_replay_report, classify_dmesg_text,
+        parse_kernel_replay_report, parse_kernel_replay_summary, run,
     };
     use crate::cli::KernelReportArgs;
     use sha2::{Digest, Sha256};
@@ -378,6 +509,31 @@ mod tests {
   "message": "failed to verify superblock checksum",
   "signature": "kernel_rejected: failed to verify superblock checksum",
   "dangerous_pattern": null
+}"#;
+
+    const VALID_SUMMARY: &str = r#"{
+  "schema": "erofs-rs.kernel-replay-summary.v1",
+  "queue": "corpus/crashes/kernel-candidates",
+  "candidate_count": 2,
+  "failure_count": 1,
+  "reports": [
+    {
+      "candidate": "corpus/crashes/kernel-candidates/a.erofs",
+      "artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "qemu_exit_code": 0,
+      "replay_status": "rejected",
+      "report_status": "written",
+      "report_path": "kernel-replay/reports/a.kernel-report.json"
+    },
+    {
+      "candidate": "corpus/crashes/kernel-candidates/b.erofs",
+      "artifact_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "qemu_exit_code": 1,
+      "replay_status": "needs-triage",
+      "report_status": "failed",
+      "report_path": "kernel-replay/reports/b.kernel-report.json"
+    }
+  ]
 }"#;
 
     #[test]
@@ -457,6 +613,67 @@ mod tests {
         assert_eq!(report.schema, KERNEL_REPLAY_REPORT_SCHEMA);
         assert_eq!(report.outcome, KernelReplayOutcome::Rejected);
         assert_eq!(report.kernel_git.as_deref(), Some("linux-test-rev"));
+    }
+
+    #[test]
+    fn kernel_replay_summary_parser_accepts_valid_report() {
+        let summary = parse_kernel_replay_summary(VALID_SUMMARY).unwrap();
+
+        assert_eq!(summary.schema, KERNEL_REPLAY_SUMMARY_SCHEMA);
+        assert_eq!(summary.queue, "corpus/crashes/kernel-candidates");
+        assert_eq!(summary.candidate_count, 2);
+        assert_eq!(summary.failure_count, 1);
+        assert_eq!(summary.reports.len(), 2);
+    }
+
+    #[test]
+    fn kernel_replay_summary_parser_rejects_count_mismatch() {
+        let summary = VALID_SUMMARY.replace(r#""failure_count": 1"#, r#""failure_count": 0"#);
+
+        let error = parse_kernel_replay_summary(&summary).unwrap_err();
+
+        assert!(matches!(
+            error,
+            KernelReplayReportError::SummaryCountMismatch {
+                field: "failure_count",
+                expected: 1,
+                actual: 0
+            }
+        ));
+    }
+
+    #[test]
+    fn kernel_replay_summary_parser_rejects_duplicate_candidate() {
+        let summary = VALID_SUMMARY.replace(
+            "corpus/crashes/kernel-candidates/b.erofs",
+            "corpus/crashes/kernel-candidates/a.erofs",
+        );
+
+        let error = parse_kernel_replay_summary(&summary).unwrap_err();
+
+        assert!(matches!(
+            error,
+            KernelReplayReportError::DuplicateSummaryCandidate(candidate)
+                if candidate == "corpus/crashes/kernel-candidates/a.erofs"
+        ));
+    }
+
+    #[test]
+    fn kernel_replay_summary_parser_rejects_invalid_status() {
+        let summary = VALID_SUMMARY.replace(
+            r#""replay_status": "needs-triage""#,
+            r#""replay_status": "unsafe""#,
+        );
+
+        let error = parse_kernel_replay_summary(&summary).unwrap_err();
+
+        assert!(matches!(
+            error,
+            KernelReplayReportError::InvalidSummaryStatus {
+                field: "reports.replay_status",
+                ..
+            }
+        ));
     }
 
     #[test]

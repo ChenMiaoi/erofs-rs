@@ -212,6 +212,14 @@ signatures whose `kernel_*:` prefix does not match the outcome. Unsafe reports
 must include the dangerous pattern. Non-unsafe reports must not carry a
 dangerous pattern.
 
+Scheduled kernel replay uploads `kernel-replay/summary.json` using the
+`erofs-rs.kernel-replay-summary.v1` schema. The summary records the candidate
+queue path, candidate count, failure count, and one row per candidate with the
+artifact SHA-256, QEMU exit code, replay status, report status, and report
+path. The Rust library parser rejects malformed artifact digests, duplicate
+candidates or report paths, invalid status values, and mismatched candidate or
+failure counts before automation consumes the replay artifact.
+
 ## Finding Bundle Manifest
 
 A portable finding bundle should include:

@@ -500,7 +500,9 @@ CI is split by cost and feedback speed:
   When curated `.erofs` candidates are present on the checked-out ref, it
   builds the local kernel and initramfs, replays each image with
   `make smoke-malformed`, writes `erofs-rs.kernel-replay.v1` JSON reports, and
-  uploads the QEMU logs, exit codes, and replay summary.
+  uploads the QEMU logs, exit codes, individual reports, and an
+  `erofs-rs.kernel-replay-summary.v1` JSON summary with candidate and failure
+  counts.
 
 The `erofs-utils` safety checks do not prove the tools are safe. They report a
 bounded smoke result such as `tool crashes: 0`, `tool timeouts: 0`, and
@@ -512,7 +514,9 @@ the kernel is too heavy for the default feedback loop. Use the local `Makefile`
 for QEMU-based kernel testing. Scheduled/manual replay uses the same
 `smoke-malformed` safety policy and `erofs-rs kernel-report` turns captured
 QEMU logs into `erofs-rs.kernel-replay.v1` reports so local and scheduled jobs
-share the same unsafe-kernel-output policy.
+share the same unsafe-kernel-output policy. The summary parser rejects
+malformed artifact digests, duplicate candidates or report paths, invalid
+status values, and mismatched candidate or failure counts.
 
 Issue and pull request templates require reproducible commands, fuzz seeds or
 artifacts when relevant, observed output, test coverage, and DCO-style

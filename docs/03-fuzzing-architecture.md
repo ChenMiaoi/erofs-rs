@@ -94,6 +94,7 @@ metadata instead of guessing how an artifact was produced.
 | seed matrix manifest | `generate-seed-matrix.sh` | JSON array | Reproducible seed provenance and feature tags |
 | finding bundle manifest | library validator | `erofs-rs.finding-bundle.v1` | Portable triage bundle index |
 | kernel replay report | library schema | `erofs-rs.kernel-replay.v1` | Dmesg classification and unsafe signal metadata |
+| kernel replay summary | scheduled replay workflow | `erofs-rs.kernel-replay-summary.v1` | Per-candidate replay status and failure counts |
 
 Schema names are part of the review surface. Add a new schema version when a
 consumer cannot safely handle the old shape.
@@ -127,7 +128,9 @@ Scheduled or self-hosted jobs can be broader:
 - Cross-campaign bucket database generation.
 - Kernel replay over curated candidate artifacts. The scheduled kernel replay
   workflow is manual/scheduled only, skips empty queues, and uploads
-  `erofs-rs.kernel-replay.v1` reports instead of joining the default PR gate.
+  `erofs-rs.kernel-replay.v1` reports plus an
+  `erofs-rs.kernel-replay-summary.v1` summary instead of joining the default
+  PR gate.
 
 Do not make heavyweight kernel replay a default PR requirement unless the
 runner can provide a reproducible kernel artifact and stable runtime budget.

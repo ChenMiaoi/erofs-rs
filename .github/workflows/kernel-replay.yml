@@ -39,6 +39,21 @@ jobs:
               echo "No kernel replay queue found at $queue."
               echo "Add curated .erofs images on a replay branch to run QEMU checks."
             } > "$out_dir/summary.txt"
+            python3 - "$queue" "$out_dir/summary.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          queue, output = sys.argv[1:]
+          summary = {
+              "schema": "erofs-rs.kernel-replay-summary.v1",
+              "queue": queue,
+              "candidate_count": 0,
+              "failure_count": 0,
+              "reports": [],
+          }
+          Path(output).write_text(json.dumps(summary, indent=2) + "\n")
+          PY
             exit 0
           fi
 
@@ -49,6 +64,21 @@ jobs:
               echo "No .erofs kernel replay candidates found in $queue."
               echo "Add curated images before expecting QEMU replay reports."
             } > "$out_dir/summary.txt"
+            python3 - "$queue" "$out_dir/summary.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          queue, output = sys.argv[1:]
+          summary = {
+              "schema": "erofs-rs.kernel-replay-summary.v1",
+              "queue": queue,
+              "candidate_count": 0,
+              "failure_count": 0,
+              "reports": [],
+          }
+          Path(output).write_text(json.dumps(summary, indent=2) + "\n")
+          PY
             exit 0
           fi
 
@@ -84,6 +114,8 @@ jobs:
           set -euo pipefail
           report_dir="kernel-replay/reports"
           mkdir -p "$report_dir"
+          entries_jsonl="kernel-replay/summary-entries.jsonl"
+          : > "$entries_jsonl"
           kernel_git="$(git -C vendor/linux rev-parse HEAD 2>/dev/null || true)"
           kernel_args=()
           if [ -n "$kernel_git" ]; then
@@ -130,7 +162,53 @@ jobs:
             printf '| `%s` | %s | %s | %s |\n' \
               "$img" "$replay" "$qemu_rc" "$report" \
               >> kernel-replay/replay-table.md
+            python3 - "$entries_jsonl" "$img" "$sha" "$qemu_rc" \
+              "$replay" "$report" "$json_report" <<'PY'
+          import json
+          import sys
+
+          (
+              output,
+              candidate,
+              artifact_sha256,
+              qemu_exit_code,
+              replay_status,
+              report_status,
+              report_path,
+          ) = sys.argv[1:]
+          entry = {
+              "candidate": candidate,
+              "artifact_sha256": artifact_sha256,
+              "qemu_exit_code": int(qemu_exit_code),
+              "replay_status": replay_status,
+              "report_status": report_status,
+              "report_path": report_path,
+          }
+          with open(output, "a", encoding="utf-8") as stream:
+              stream.write(json.dumps(entry, sort_keys=True) + "\n")
+          PY
           done < kernel-replay/candidates.txt
+
+          python3 - "$entries_jsonl" "$failures" kernel-replay/summary.json <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          entries_path, failures, output = sys.argv[1:]
+          reports = [
+              json.loads(line)
+              for line in Path(entries_path).read_text().splitlines()
+              if line.strip()
+          ]
+          summary = {
+              "schema": "erofs-rs.kernel-replay-summary.v1",
+              "queue": "corpus/crashes/kernel-candidates",
+              "candidate_count": len(reports),
+              "failure_count": int(failures),
+              "reports": reports,
+          }
+          Path(output).write_text(json.dumps(summary, indent=2) + "\n")
+          PY
 
           {
             cat kernel-replay/summary.txt

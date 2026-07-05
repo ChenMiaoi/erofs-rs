@@ -4,7 +4,7 @@ use erofs_rs::{
     corpus::{parse_cmin_summary_report, parse_coverage_manifest},
     finding_bundle::parse_finding_bundle_manifest,
     fuzz::parse_fuzz_artifact_sidecar,
-    kernel_replay::parse_kernel_replay_report,
+    kernel_replay::{parse_kernel_replay_report, parse_kernel_replay_summary},
     oracle::parse_oracle_json_report,
     replay::parse_replay_report,
     seed_manifest::parse_seed_matrix_manifest,
@@ -18,7 +18,7 @@ fuzz_target!(|data: &[u8]| {
     };
     let content = String::from_utf8_lossy(content);
 
-    match selector % 10 {
+    match selector % 11 {
         0 => {
             let _ = parse_fuzz_artifact_sidecar(&content);
         }
@@ -38,12 +38,15 @@ fuzz_target!(|data: &[u8]| {
             let _ = parse_kernel_replay_report(&content);
         }
         6 => {
-            let _ = parse_finding_bundle_manifest(&content);
+            let _ = parse_kernel_replay_summary(&content);
         }
         7 => {
-            let _ = parse_coverage_manifest(&content);
+            let _ = parse_finding_bundle_manifest(&content);
         }
         8 => {
+            let _ = parse_coverage_manifest(&content);
+        }
+        9 => {
             let _ = parse_cmin_summary_report(&content);
         }
         _ => {
