@@ -92,7 +92,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            autoconf automake bc bison build-essential cpio flex gzip \
+            acl attr autoconf automake bc bison build-essential cpio flex gzip \
             liblz4-dev liblzma-dev libssl-dev libtool libtool-bin \
             libzstd-dev openssl pkg-config qemu-system-x86 rsync \
             uuid-dev zlib1g-dev
@@ -110,6 +110,10 @@ jobs:
         run: |
           ./scripts/generate-seed-corpus.sh
           ./scripts/generate-complex-seeds.sh
+          ./scripts/generate-seed-matrix.sh \
+            --block-size 4096 \
+            --compression none,lz4
+          python3 -m json.tool corpus/seeds/matrix/manifest.json >/dev/null
 
       - name: Run erofs-utils safety smoke
         run: ./scripts/erofs-utils-safety-smoke.sh

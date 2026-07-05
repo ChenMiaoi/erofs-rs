@@ -42,7 +42,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            autoconf automake bc bison build-essential clang cpio flex gzip \
+            acl attr autoconf automake bc bison build-essential clang cpio flex gzip \
             liblz4-dev liblzma-dev libssl-dev libtool libtool-bin \
             libzstd-dev llvm openssl pkg-config qemu-system-x86 rsync \
             uuid-dev zlib1g-dev
@@ -60,6 +60,8 @@ jobs:
         run: |
           ./scripts/generate-seed-corpus.sh
           ./scripts/generate-complex-seeds.sh
+          ./scripts/generate-seed-matrix.sh
+          python3 -m json.tool corpus/seeds/matrix/manifest.json >/dev/null
 
       - name: Build erofs-rs CLI
         run: cargo build --locked --release
@@ -154,6 +156,7 @@ jobs:
             corpus/artifacts/
             corpus/fuzz-out/
             corpus/rust-fuzz/
+            corpus/seeds/matrix/manifest.json
             corpus/erofs-utils-safety/
             corpus/erofs-utils-safety-sanitized/
             corpus/mutated/*/manifest.txt

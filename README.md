@@ -193,6 +193,26 @@ location, and checksum repair. Generated libFuzzer corpora and artifacts under
 `fuzz/corpus/`, `fuzz/artifacts/`, and `fuzz/target/` are local byproducts and
 should not be committed unless a minimized regression is intentionally added.
 
+### Seed matrix generation
+
+The basic and complex seed scripts create a small hand-written corpus. For
+feature coverage, `generate-seed-matrix.sh` builds a reproducible matrix with
+block-size, compression, user-xattr, POSIX ACL, large-directory, special-file,
+socket, device-node, and chunked-file variants when the host tools can create
+them:
+
+```bash
+./scripts/generate-seed-matrix.sh
+./scripts/generate-seed-matrix.sh \
+    --output-dir /tmp/seed-matrix \
+    --block-size 1024,4096 \
+    --compression none,lz4
+```
+
+The script writes `manifest.json` next to the generated images with the source
+profile, mkfs command, mkfs version, erofs-utils revision, feature tags, and
+full SHA-256 for each seed.
+
 ### `oracle` – userspace differential checks
 
 ```bash
@@ -283,11 +303,12 @@ CI is split by cost and feedback speed:
   Clippy. A second job builds and briefly runs the Rust-native libFuzzer
   targets under `fuzz/` with `cargo-fuzz`. A third job builds
   `vendor/erofs-utils`, installs the local `fsck.erofs` fixture, runs the full
-  Rust test suite, generates seed images,
+  Rust test suite, generates basic, complex, and matrix seed images,
   runs an `erofs-utils` safety smoke over `mkfs.erofs`, `fsck.erofs`, and
   `dump.erofs`, and performs a deterministic short fuzz smoke with `--no-tui`.
 - `.github/workflows/fuzz-erofs.yml` runs weekly and by manual dispatch. It
-  builds `vendor/erofs-utils`, runs tests, generates seed corpus, runs
+  builds `vendor/erofs-utils`, runs tests, generates seed corpus and seed
+  matrix, runs
   structured mutations, classifies artifacts, builds the upstream libFuzzer
   target, runs a short fuzzing session, runs the Rust-native libFuzzer targets
   and `cargo fuzz cmin` corpus minimization, builds ASAN/UBSAN-instrumented
