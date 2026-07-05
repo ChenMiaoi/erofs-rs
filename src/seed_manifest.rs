@@ -77,6 +77,18 @@ pub enum SeedManifestError {
         feature_index: usize,
         feature: String,
     },
+    #[error("seed matrix missing required semantic feature: {feature}")]
+    MissingRequiredFeature { feature: &'static str },
+    #[error("seed matrix missing required semantic combination: {combination}")]
+    MissingRequiredCombination { combination: &'static str },
+    #[error(
+        "seed matrix entry {index} source_profile {source_profile} is missing semantic feature {feature}"
+    )]
+    MissingProfileFeature {
+        index: usize,
+        source_profile: String,
+        feature: &'static str,
+    },
 }
 
 pub fn parse_seed_matrix_manifest(
@@ -145,14 +157,105 @@ pub fn validate_seed_matrix_manifest(entries: &[SeedMatrixEntry]) -> Result<(), 
     Ok(())
 }
 
+pub fn validate_seed_matrix_semantic_coverage(
+    entries: &[SeedMatrixEntry],
+) -> Result<(), SeedManifestError> {
+    require_required_feature(entries, "block_size:4096")?;
+    require_required_feature(entries, "compression:none")?;
+
+    for (combination, features) in REQUIRED_COMBINATIONS {
+        require_required_combination(entries, combination, features)?;
+    }
+
+    for (index, entry) in entries.iter().enumerate() {
+        let expected_features = match entry.source_profile.as_str() {
+            "large_dir" => &["dir_size:multiblock"][..],
+            "xattr_user" => &["xattrs:user"][..],
+            "xattr_long_prefix" => &["xattrs:user", "xattrs:long_prefix"][..],
+            "xattr_shared" => &["xattrs:user", "xattrs:shared"][..],
+            "xattr_name_filter" => &["xattrs:user", "xattrs:name_filter"][..],
+            "acl_posix" => &["acl:posix"][..],
+            "special_files" => &["hardlink:true", "fifo:true", "symlink:true"][..],
+            "socket" => &["socket:true"][..],
+            "device_node" => &["device:char"][..],
+            _ => &[][..],
+        };
+        for feature in expected_features {
+            if !entry_has_feature(entry, feature) {
+                return Err(SeedManifestError::MissingProfileFeature {
+                    index,
+                    source_profile: entry.source_profile.clone(),
+                    feature,
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
 pub fn run(args: &SeedManifestArgs) -> AnyhowResult<()> {
     let content = fs::read_to_string(&args.manifest)
         .with_context(|| format!("failed to read seed matrix manifest {}", args.manifest))?;
     let entries = parse_seed_matrix_manifest(&content)
         .with_context(|| format!("failed to validate seed matrix manifest {}", args.manifest))?;
+    validate_seed_matrix_semantic_coverage(&entries)
+        .with_context(|| format!("failed to validate seed matrix coverage {}", args.manifest))?;
 
     println!("Seed matrix manifest OK: {} entries", entries.len());
     Ok(())
+}
+
+const REQUIRED_COMBINATIONS: &[(&str, &[&str])] = &[
+    (
+        "plain uncompressed small-directory seed",
+        &["layout:plain", "compression:none", "dir_size:small"],
+    ),
+    (
+        "multiblock directory seed",
+        &["layout:plain", "compression:none", "dir_size:multiblock"],
+    ),
+    ("chunked seed", &["layout:chunked", "chunksize:4096"]),
+    (
+        "packed fragment seed",
+        &["layout:fragment", "packed_inode:true", "compression:lz4"],
+    ),
+    (
+        "special-file seed",
+        &["hardlink:true", "fifo:true", "symlink:true"],
+    ),
+];
+
+fn require_required_feature(
+    entries: &[SeedMatrixEntry],
+    feature: &'static str,
+) -> Result<(), SeedManifestError> {
+    if entries.iter().any(|entry| {
+        entry.requirement == SeedRequirement::Required && entry_has_feature(entry, feature)
+    }) {
+        return Ok(());
+    }
+    Err(SeedManifestError::MissingRequiredFeature { feature })
+}
+
+fn require_required_combination(
+    entries: &[SeedMatrixEntry],
+    combination: &'static str,
+    features: &[&'static str],
+) -> Result<(), SeedManifestError> {
+    if entries.iter().any(|entry| {
+        entry.requirement == SeedRequirement::Required
+            && features
+                .iter()
+                .all(|feature| entry_has_feature(entry, feature))
+    }) {
+        return Ok(());
+    }
+    Err(SeedManifestError::MissingRequiredCombination { combination })
+}
+
+fn entry_has_feature(entry: &SeedMatrixEntry, feature: &str) -> bool {
+    entry.features.iter().any(|candidate| candidate == feature)
 }
 
 fn require_seed_name(index: usize, seed: &str) -> Result<(), SeedManifestError> {
@@ -246,7 +349,12 @@ fn is_portable_path_component(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{SeedManifestError, SeedRequirement, parse_seed_matrix_manifest};
+    use super::{
+        SeedManifestError, SeedMatrixEntry, SeedRequirement, parse_seed_matrix_manifest, run,
+        validate_seed_matrix_semantic_coverage,
+    };
+    use crate::cli::SeedManifestArgs;
+    use tempfile::TempDir;
 
     const VALID_MANIFEST: &str = r#"[
   {
@@ -472,5 +580,156 @@ mod tests {
                 feature,
             } if feature == "block_size:4096"
         ));
+    }
+
+    fn semantic_entry(
+        seed: &str,
+        source_profile: &str,
+        requirement: SeedRequirement,
+        features: &[&str],
+    ) -> SeedMatrixEntry {
+        SeedMatrixEntry {
+            seed: format!("{seed}.erofs"),
+            path: format!("/tmp/seed-matrix/{seed}.erofs"),
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+            source_profile: source_profile.to_string(),
+            requirement,
+            mkfs: format!("mkfs.erofs /tmp/seed-matrix/{seed}.erofs <source:{source_profile}>"),
+            mkfs_version: "mkfs.erofs 1.8.0".to_string(),
+            erofs_utils_git: String::new(),
+            features: features
+                .iter()
+                .map(|feature| (*feature).to_string())
+                .collect(),
+        }
+    }
+
+    fn semantic_entries() -> Vec<SeedMatrixEntry> {
+        vec![
+            semantic_entry(
+                "block-4096-plain",
+                "basic",
+                SeedRequirement::Required,
+                &[
+                    "block_size:4096",
+                    "compression:none",
+                    "layout:plain",
+                    "dir_size:small",
+                ],
+            ),
+            semantic_entry(
+                "large-dir-multiblock-4k",
+                "large_dir",
+                SeedRequirement::Required,
+                &[
+                    "block_size:4096",
+                    "compression:none",
+                    "layout:plain",
+                    "dir_size:multiblock",
+                ],
+            ),
+            semantic_entry(
+                "hardlink-fifo-symlink-4k",
+                "special_files",
+                SeedRequirement::Required,
+                &[
+                    "block_size:4096",
+                    "compression:none",
+                    "layout:plain",
+                    "hardlink:true",
+                    "fifo:true",
+                    "symlink:true",
+                ],
+            ),
+            semantic_entry(
+                "chunked-4k",
+                "basic",
+                SeedRequirement::Required,
+                &[
+                    "block_size:4096",
+                    "compression:none",
+                    "layout:chunked",
+                    "chunksize:4096",
+                ],
+            ),
+            semantic_entry(
+                "fragment-packed-lz4-4k",
+                "basic",
+                SeedRequirement::Required,
+                &[
+                    "block_size:4096",
+                    "compression:lz4",
+                    "layout:fragment",
+                    "packed_inode:true",
+                ],
+            ),
+        ]
+    }
+
+    #[test]
+    fn seed_matrix_semantics_accept_generated_required_coverage() {
+        let entries = semantic_entries();
+
+        validate_seed_matrix_semantic_coverage(&entries).unwrap();
+    }
+
+    #[test]
+    fn seed_matrix_semantics_reject_missing_required_combination() {
+        let mut entries = semantic_entries();
+        entries.retain(|entry| !entry.features.contains(&"layout:chunked".to_string()));
+
+        let error = validate_seed_matrix_semantic_coverage(&entries).unwrap_err();
+
+        assert!(matches!(
+            error,
+            SeedManifestError::MissingRequiredCombination { combination }
+                if combination == "chunked seed"
+        ));
+    }
+
+    #[test]
+    fn seed_matrix_semantics_reject_profile_feature_mismatch() {
+        let mut entries = semantic_entries();
+        entries.push(semantic_entry(
+            "xattr-shared-4k",
+            "xattr_shared",
+            SeedRequirement::BestEffort,
+            &[
+                "block_size:4096",
+                "compression:none",
+                "xattrs:user",
+                "layout:plain",
+                "dir_size:small",
+            ],
+        ));
+
+        let error = validate_seed_matrix_semantic_coverage(&entries).unwrap_err();
+
+        assert!(matches!(
+            error,
+            SeedManifestError::MissingProfileFeature {
+                index: 5,
+                source_profile,
+                feature: "xattrs:shared",
+            } if source_profile == "xattr_shared"
+        ));
+    }
+
+    #[test]
+    fn seed_manifest_command_rejects_shape_only_manifest() {
+        let tmp = TempDir::new().unwrap();
+        let manifest = tmp.path().join("manifest.json");
+        std::fs::write(&manifest, VALID_MANIFEST).unwrap();
+        let args = SeedManifestArgs {
+            manifest: manifest.to_string_lossy().to_string(),
+        };
+
+        let error = run(&args).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("failed to validate seed matrix coverage")
+        );
     }
 }

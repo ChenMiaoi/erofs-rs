@@ -374,7 +374,11 @@ capabilities such as xattr, ACL, socket, or device-node support. Use
 CI or review tooling consumes them. Feature tags must use `namespace:value`
 form. The Rust validator checks required fields, unique seed paths and
 digests, safe seed file names, path-to-seed consistency, per-entry feature
-uniqueness, feature tag shape, and SHA-256 width.
+uniqueness, feature tag shape, and SHA-256 width. It also checks that required
+matrix entries still cover the baseline plain, multiblock directory, chunked,
+packed-fragment, and special-file combinations, and that host-dependent
+profiles such as shared xattrs, xattr filters, ACLs, sockets, and device nodes
+carry the expected feature tags when they are present.
 
 ### `oracle` – userspace differential checks
 

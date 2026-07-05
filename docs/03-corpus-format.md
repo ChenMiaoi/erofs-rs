@@ -68,7 +68,11 @@ The Rust manifest validator rejects feature tags without both a namespace and
 a value. It also rejects duplicate seed names, generated paths, SHA-256
 digests, unsafe seed file names, paths with parent-directory components, paths
 whose file name does not match the `seed` field, and duplicate feature tags
-within one entry.
+within one entry. The `seed-manifest` command also checks semantic coverage for
+the generated matrix: required entries must still cover the baseline plain,
+large-directory, chunked, packed-fragment, and special-file combinations, and
+host-dependent profiles must carry their corresponding xattr, ACL, socket, or
+device-node feature tags whenever those best-effort seeds are generated.
 
 ## Coverage Corpus Manifest
 
