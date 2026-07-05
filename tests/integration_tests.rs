@@ -139,6 +139,7 @@ fn test_tolerant_parse_reports_valid_fixture_offsets() {
         report.inodes.iter().filter(|entry| entry.is_ok()).count(),
         2
     );
+    assert!(report.xattrs.is_empty());
     assert!(report.dirents.iter().filter(|entry| entry.is_ok()).count() >= 3);
     assert!(report.offsets_seen.contains(&EROFS_SUPER_OFFSET));
 }
@@ -230,6 +231,35 @@ fn test_tolerant_parse_records_invalid_dirent_nid() {
             && error.reason.contains("dirent nid")
             && (error.reason.contains("inode offset overflows")
                 || error.reason.contains("does not fit host usize"))
+    }));
+}
+
+#[test]
+fn test_tolerant_parse_records_invalid_inline_xattr_shared_count() {
+    let mut img = read_image(fixture("single.erofs")).unwrap();
+    let report = parse_image(&img, ParseMode::FuzzTolerant).unwrap();
+    let root_offset = report
+        .inodes
+        .iter()
+        .find_map(|entry| entry.as_ref().ok().map(|inode| inode.offset))
+        .unwrap();
+    let i_format = img.read_field(root_offset, FieldWidth::U16).unwrap();
+    let inode_size = if (i_format & 0x01) != 0 { 64 } else { 32 };
+    let xattr_offset = root_offset + inode_size;
+
+    img.write_field(root_offset + 0x02, FieldWidth::U16, 1)
+        .unwrap();
+    img.write_field(xattr_offset + 0x04, FieldWidth::U8, 1)
+        .unwrap();
+    let report = parse_image(&img, ParseMode::FuzzTolerant).unwrap();
+
+    assert!(report.offsets_seen.contains(&xattr_offset));
+    assert!(report.errors.iter().any(|error| {
+        error.stage == ParseStage::Xattr
+            && error.offset == Some(xattr_offset)
+            && error
+                .reason
+                .contains("inline xattr shared entries exceed region size")
     }));
 }
 

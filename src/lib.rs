@@ -26,4 +26,4 @@ pub use fsck::{
 };
 pub use image::{FieldWidth, Image, Superblock, read_image, write_image};
 pub use inode::{Inode, locate_inodes};
-pub use parse::{ParseError, ParseMode, ParseReport, ParseStage, parse_image};
+pub use parse::{ParseError, ParseMode, ParseReport, ParseStage, XattrRegion, parse_image};

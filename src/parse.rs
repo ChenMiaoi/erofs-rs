@@ -21,6 +21,7 @@ pub enum ParseMode {
 pub enum ParseStage {
     Superblock,
     Inode,
+    Xattr,
     Dirent,
 }
 
@@ -29,6 +30,7 @@ impl fmt::Display for ParseStage {
         match self {
             Self::Superblock => f.write_str("superblock"),
             Self::Inode => f.write_str("inode"),
+            Self::Xattr => f.write_str("xattr"),
             Self::Dirent => f.write_str("dirent"),
         }
     }
@@ -58,12 +60,25 @@ impl ParseError {
 pub struct ParseReport {
     pub superblock: Option<Superblock>,
     pub inodes: Vec<std::result::Result<Inode, ParseError>>,
+    pub xattrs: Vec<std::result::Result<XattrRegion, ParseError>>,
     pub dirents: Vec<std::result::Result<Dirent, ParseError>>,
     pub errors: Vec<ParseError>,
     pub offsets_seen: BTreeSet<usize>,
 }
 
+/// Located inline xattr region for a parsed inode.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct XattrRegion {
+    pub inode_nid: u64,
+    pub offset: usize,
+    pub size: usize,
+    pub shared_count: u8,
+    pub desc: String,
+}
+
 const INODE_SLOT_SIZE: usize = 32;
+const XATTR_HEADER_SIZE: usize = 12;
+const XATTR_SHARED_ENTRY_SIZE: usize = 4;
 
 /// Parse an image with either strict CLI-style failure or fuzz-tolerant reporting.
 pub fn parse_image(image: &Image, mode: ParseMode) -> Result<ParseReport> {
@@ -120,6 +135,21 @@ pub fn parse_image(image: &Image, mode: ParseMode) -> Result<ParseReport> {
         .filter_map(|entry| entry.as_ref().ok().cloned())
         .collect();
     if mode == ParseMode::FuzzTolerant {
+        report.xattrs = locate_xattrs_tolerant(image, &parsed_inodes);
+        for entry in &report.xattrs {
+            match entry {
+                Ok(region) => {
+                    report.offsets_seen.insert(region.offset);
+                }
+                Err(error) => {
+                    if let Some(offset) = error.offset {
+                        report.offsets_seen.insert(offset);
+                    }
+                    report.errors.push(error.clone());
+                }
+            }
+        }
+
         report.dirents = locate_dirents_tolerant(image, &superblock, &parsed_inodes);
         for entry in &report.dirents {
             match entry {
@@ -208,6 +238,163 @@ fn validate_root_inode_tolerant(image: &Image, sb: &Superblock) -> Option<ParseE
             format!("failed to classify root inode: {error}"),
         )),
     }
+}
+
+fn locate_xattrs_tolerant(
+    image: &Image,
+    inodes: &[Inode],
+) -> Vec<std::result::Result<XattrRegion, ParseError>> {
+    let mut regions = Vec::new();
+
+    for inode in inodes {
+        match validate_xattr_region_tolerant(image, inode) {
+            Ok(Some(region)) => regions.push(Ok(region)),
+            Ok(None) => {}
+            Err(errors) => regions.extend(errors.into_iter().map(Err)),
+        }
+    }
+
+    regions
+}
+
+fn validate_xattr_region_tolerant(
+    image: &Image,
+    inode: &Inode,
+) -> std::result::Result<Option<XattrRegion>, Vec<ParseError>> {
+    let mut errors = Vec::new();
+
+    if inode
+        .offset
+        .checked_add(4)
+        .is_none_or(|end| end > image.len())
+    {
+        return Err(vec![ParseError::new(
+            ParseStage::Xattr,
+            Some(inode.offset),
+            "inode xattr count out of bounds",
+        )]);
+    }
+
+    let data = image.as_bytes();
+    let i_xattr_icount = u16::from_le_bytes([data[inode.offset + 2], data[inode.offset + 3]]);
+    if i_xattr_icount == 0 {
+        return Ok(None);
+    }
+
+    let xattr_size = xattr_ibody_size_tolerant(i_xattr_icount).map_err(|reason| {
+        vec![ParseError::new(
+            ParseStage::Xattr,
+            Some(inode.offset + 2),
+            reason,
+        )]
+    })?;
+    let inode_size = inode_size_tolerant(image, inode.offset).map_err(|reason| {
+        vec![ParseError::new(
+            ParseStage::Xattr,
+            Some(inode.offset),
+            reason,
+        )]
+    })?;
+    let xattr_offset = match inode.offset.checked_add(inode_size) {
+        Some(offset) => offset,
+        None => {
+            return Err(vec![ParseError::new(
+                ParseStage::Xattr,
+                Some(inode.offset),
+                "inline xattr offset overflows",
+            )]);
+        }
+    };
+    let xattr_end = match xattr_offset.checked_add(xattr_size) {
+        Some(end) => end,
+        None => {
+            return Err(vec![ParseError::new(
+                ParseStage::Xattr,
+                Some(xattr_offset),
+                "inline xattr size overflows",
+            )]);
+        }
+    };
+    if xattr_end > image.len() {
+        return Err(vec![ParseError::new(
+            ParseStage::Xattr,
+            Some(xattr_offset),
+            format!(
+                "inline xattr region out of bounds (size={xattr_size}, image_len={})",
+                image.len()
+            ),
+        )]);
+    }
+
+    let shared_count = data[xattr_offset + 4];
+    let shared_bytes = (shared_count as usize)
+        .checked_mul(XATTR_SHARED_ENTRY_SIZE)
+        .ok_or_else(|| {
+            vec![ParseError::new(
+                ParseStage::Xattr,
+                Some(xattr_offset + 4),
+                format!("inline xattr shared count {shared_count} overflows"),
+            )]
+        })?;
+    let shared_end = XATTR_HEADER_SIZE.checked_add(shared_bytes).ok_or_else(|| {
+        vec![ParseError::new(
+            ParseStage::Xattr,
+            Some(xattr_offset + 4),
+            format!("inline xattr shared count {shared_count} overflows"),
+        )]
+    })?;
+    if shared_end > xattr_size {
+        errors.push(ParseError::new(
+            ParseStage::Xattr,
+            Some(xattr_offset),
+            format!("inline xattr shared entries exceed region size (shared_count={shared_count}, size={xattr_size})"),
+        ));
+    }
+
+    for rel in 5..XATTR_HEADER_SIZE {
+        if data[xattr_offset + rel] != 0 {
+            errors.push(ParseError::new(
+                ParseStage::Xattr,
+                Some(xattr_offset + rel),
+                "inline xattr header reserved byte is nonzero",
+            ));
+            break;
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(Some(XattrRegion {
+            inode_nid: inode.nid,
+            offset: xattr_offset,
+            size: xattr_size,
+            shared_count,
+            desc: format!("{}_xattr", inode.desc),
+        }))
+    } else {
+        Err(errors)
+    }
+}
+
+fn xattr_ibody_size_tolerant(i_xattr_icount: u16) -> std::result::Result<usize, String> {
+    XATTR_HEADER_SIZE
+        .checked_add(
+            ((i_xattr_icount as usize) - 1)
+                .checked_mul(XATTR_SHARED_ENTRY_SIZE)
+                .ok_or_else(|| format!("inode xattr body size overflows: {i_xattr_icount}"))?,
+        )
+        .ok_or_else(|| format!("inode xattr body size overflows: {i_xattr_icount}"))
+}
+
+fn inode_size_tolerant(image: &Image, inode_offset: usize) -> std::result::Result<usize, String> {
+    if inode_offset
+        .checked_add(2)
+        .is_none_or(|end| end > image.len())
+    {
+        return Err("inode format out of bounds".to_string());
+    }
+    let data = image.as_bytes();
+    let i_format = u16::from_le_bytes([data[inode_offset], data[inode_offset + 1]]);
+    Ok(if (i_format & 0x01) != 0 { 64 } else { 32 })
 }
 
 fn locate_dirents_tolerant(
