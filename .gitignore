@@ -5,6 +5,14 @@
 # Project-generated build and replay artifacts
 /build/
 /corpus/*
+!/corpus/seeds/
+/corpus/seeds/*
+!/corpus/seeds/minimized/
+/corpus/seeds/minimized/*
+!/corpus/seeds/minimized/README.md
+!/corpus/seeds/minimized/manifest.json
+!/corpus/seeds/minimized/*/
+!/corpus/seeds/minimized/*/*
 !/corpus/crashes/
 /corpus/crashes/*
 !/corpus/crashes/kernel-candidates/

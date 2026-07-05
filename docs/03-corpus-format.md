@@ -110,6 +110,71 @@ When collecting a cargo-fuzz tree, coverage mode reads `<target>/corpus/`
 entries and skips `<target>/artifacts/` so crash artifacts stay in triage
 bundles instead of entering the minimized seed import path.
 
+## Reviewed Minimized Corpus Manifest
+
+Reviewed coverage units enter the long-lived corpus through
+`erofs-rs minimized-import`:
+
+```bash
+erofs-rs minimized-import \
+  --coverage-manifest corpus/minimized/rust-fuzz/coverage-manifest.json
+```
+
+By default this command reads copied units from the coverage manifest's
+`output_dir`, imports them into `corpus/seeds/minimized/<target>/`, and writes
+`corpus/seeds/minimized/manifest.json`. Use `--source-root` when a CI artifact
+has been unpacked at a different path. The command refuses to overwrite an
+existing imported unit with different bytes.
+
+The minimized corpus manifest uses the `erofs-rs.minimized-corpus.v1` schema:
+
+```json
+{
+  "schema": "erofs-rs.minimized-corpus.v1",
+  "import_root": "corpus/seeds/minimized",
+  "total_units": 1,
+  "total_size_bytes": 4096,
+  "targets": [
+    {
+      "target": "superblock_parse",
+      "unit_count": 1,
+      "size_bytes": 4096
+    }
+  ],
+  "units": [
+    {
+      "target": "superblock_parse",
+      "path": "corpus/seeds/minimized/superblock_parse/unit-a",
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "size_bytes": 4096,
+      "source_coverage_manifest": "corpus/minimized/rust-fuzz/coverage-manifest.json",
+      "source_path": "superblock_parse/corpus/unit-a",
+      "coverage_copied_path": "coverage-interesting/unit-a",
+      "lifecycle": "queue/userspace"
+    }
+  ]
+}
+```
+
+Validate the committed corpus with:
+
+```bash
+erofs-rs minimized-check --manifest corpus/seeds/minimized/manifest.json
+```
+
+The validator rejects unknown schemas, malformed digests, unsafe paths,
+duplicate unit paths, duplicate digests within one target, mismatched counts,
+missing files, changed file size or SHA-256, and extra files under
+`corpus/seeds/minimized/` that are not listed in the manifest. PR CI consumes
+the same manifest and replays each non-empty target directory with:
+
+```bash
+cargo +nightly fuzz run <target> corpus/seeds/minimized/<target> -- -runs=0
+```
+
+This makes reviewed minimized units durable regression inputs while keeping
+bulk weekly fuzzing output outside the repository.
+
 ## Cmin Summary
 
 The periodic fuzzing workflow writes `corpus/rust-fuzz/cmin-summary.json` using

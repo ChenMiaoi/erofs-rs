@@ -1,0 +1,8 @@
+{
+  "import_root": "corpus/seeds/minimized",
+  "schema": "erofs-rs.minimized-corpus.v1",
+  "targets": [],
+  "total_size_bytes": 0,
+  "total_units": 0,
+  "units": []
+}

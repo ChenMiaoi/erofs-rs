@@ -174,6 +174,31 @@ Reports also include lifecycle buckets such as `queue/userspace`,
 campaigns can separate expected rejects from actionable triage queues without
 changing the classification directory layout.
 
+### `minimized-import` and `minimized-check` – reviewed corpus import
+
+```bash
+erofs-rs minimized-import \
+    --coverage-manifest corpus/minimized/rust-fuzz/coverage-manifest.json
+
+erofs-rs minimized-check \
+    --manifest corpus/seeds/minimized/manifest.json
+```
+
+`minimized-import` turns a reviewed `coverage-manifest.json` into committed
+seed corpus state. It copies units from `coverage-interesting/` into
+`corpus/seeds/minimized/<target>/`, refuses to overwrite an existing path with
+different bytes, records per-unit SHA-256 and source coverage provenance, and
+updates `corpus/seeds/minimized/manifest.json` using the
+`erofs-rs.minimized-corpus.v1` schema. Use `--source-root` when a downloaded
+review artifact has been unpacked somewhere other than the manifest's recorded
+`output_dir`.
+
+`minimized-check` validates the manifest, recomputes every imported unit's
+SHA-256 and size, and rejects extra files under the import root that are not
+listed in the manifest. The PR libFuzzer job replays each target directory
+listed in this manifest with `-runs=0`, so reviewed minimized units become
+stable regression inputs once committed.
+
 ### `fuzz` – mutation-based fuzzing
 
 ```bash
@@ -348,6 +373,9 @@ cmin-summary schemas, empty command flag lists, duplicate targets, mismatched
 aggregate counts, and target summaries where `cmin` increased the unit count.
 It also rejects target names or corpus, artifact, and log paths that do not
 match the weekly `corpus/rust-fuzz/<target>/` layout.
+Reviewed units from that artifact are imported with `minimized-import`, tracked
+by `corpus/seeds/minimized/manifest.json`, and replayed by PR CI with
+`-runs=0` before the short fuzz smoke runs.
 The same periodic workflow runs two short deterministic `erofs-rs fuzz`
 campaigns, merges their `fuzz-buckets.json` reports with `erofs-rs triage`,
 and uploads the resulting `erofs-rs.bucket-db.v1` database under

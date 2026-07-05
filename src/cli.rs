@@ -36,6 +36,10 @@ pub enum Commands {
     KernelSummary(KernelSummaryArgs),
     /// Validate a generated seed matrix manifest.
     SeedManifest(SeedManifestArgs),
+    /// Import reviewed coverage-minimized units into the long-lived seed corpus.
+    MinimizedImport(MinimizedImportArgs),
+    /// Validate the long-lived minimized seed corpus manifest and files.
+    MinimizedCheck(MinimizedCheckArgs),
     /// Print superblock, inode, and dirent information.
     Info(InfoArgs),
 }
@@ -145,6 +149,41 @@ pub struct CminSummaryArgs {
 #[derive(Parser, Debug)]
 pub struct SeedManifestArgs {
     #[arg(long, help = "Path to a generated seed matrix manifest JSON file")]
+    pub manifest: String,
+}
+
+#[derive(Parser, Debug)]
+pub struct MinimizedImportArgs {
+    #[arg(
+        long,
+        help = "Reviewed coverage-manifest.json produced by corpus --mode coverage"
+    )]
+    pub coverage_manifest: String,
+    #[arg(
+        long,
+        help = "Override the coverage artifact root that contains coverage-interesting/"
+    )]
+    pub source_root: Option<String>,
+    #[arg(
+        long,
+        default_value = "corpus/seeds/minimized",
+        help = "Long-lived minimized corpus import root"
+    )]
+    pub import_root: String,
+    #[arg(
+        long,
+        help = "Output minimized corpus manifest; defaults to <import-root>/manifest.json"
+    )]
+    pub manifest: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+pub struct MinimizedCheckArgs {
+    #[arg(
+        long,
+        default_value = "corpus/seeds/minimized/manifest.json",
+        help = "Long-lived minimized corpus manifest to validate"
+    )]
     pub manifest: String,
 }
 

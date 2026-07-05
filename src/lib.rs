@@ -16,6 +16,7 @@ pub mod info;
 pub mod inject;
 pub mod inode;
 pub mod kernel_replay;
+pub mod minimized;
 pub mod mutate;
 pub mod oracle;
 pub mod parse;
