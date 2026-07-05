@@ -153,7 +153,9 @@ per-target input/collected/duplicate counts, source paths, copied artifact
 paths, sizes, lifecycle buckets, full SHA-256 digests, and recommended
 `corpus/seeds/minimized/<target>/` import paths. For `cargo-fuzz` layouts such
 as `<target>/corpus/<unit>`, the manifest records `<target>` so weekly `cmin`
-output can be reviewed and imported without losing provenance.
+output can be reviewed and imported without losing provenance. Coverage mode
+skips cargo-fuzz `<target>/artifacts/` directories so crash artifacts do not get
+mixed into the minimized seed import path.
 Reports also include lifecycle buckets such as `queue/userspace`,
 `rejects/checksum`, `crashes/userspace`, and `timeouts/userspace` so long-running
 campaigns can separate expected rejects from actionable triage queues without

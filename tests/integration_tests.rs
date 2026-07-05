@@ -947,12 +947,19 @@ fn test_corpus_coverage_mode_collects_minimized_units() {
     let artifacts = tmp.path().join("artifacts");
     let report = tmp.path().join("report.txt");
     let target_a = corpus.join("superblock_parse").join("corpus");
+    let target_a_artifacts = corpus.join("superblock_parse").join("artifacts");
     let target_b = corpus.join("inode_locate").join("corpus");
     fs::create_dir_all(&target_a).unwrap();
+    fs::create_dir_all(&target_a_artifacts).unwrap();
     fs::create_dir_all(&target_b).unwrap();
 
     fs::write(target_a.join("unit-a"), b"coverage-a").unwrap();
     fs::write(target_a.join("unit-b"), b"coverage-a").unwrap();
+    fs::write(
+        target_a_artifacts.join("crash-unit"),
+        b"not a minimized unit",
+    )
+    .unwrap();
     fs::write(target_b.join("unit-c"), b"coverage-b").unwrap();
     fs::write(corpus.join("run.log"), b"not corpus").unwrap();
 

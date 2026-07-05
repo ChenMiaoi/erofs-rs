@@ -290,7 +290,18 @@ fn collect_manifest_artifacts(
     Ok((summary, records))
 }
 
+fn has_component(path: &Path, expected: &str) -> bool {
+    path.components().any(|component| match component {
+        std::path::Component::Normal(part) => part == expected,
+        _ => false,
+    })
+}
+
 fn should_collect_coverage_file(path: &Path) -> bool {
+    if has_component(path, "artifacts") {
+        return false;
+    }
+
     let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
@@ -718,6 +729,9 @@ mod tests {
         assert!(!should_collect_coverage_file(Path::new("manifest.txt")));
         assert!(!should_collect_coverage_file(Path::new("run.log")));
         assert!(!should_collect_coverage_file(Path::new("sidecar.json")));
+        assert!(!should_collect_coverage_file(Path::new(
+            "superblock_parse/artifacts/crash-unit"
+        )));
         assert!(should_collect_coverage_file(Path::new("fuzz-unit")));
         assert!(should_collect_coverage_file(Path::new("input.erofs")));
     }
