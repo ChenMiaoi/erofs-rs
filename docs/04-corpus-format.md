@@ -183,7 +183,8 @@ rows, and the number of disagreeing rows. The Rust library parser rejects
 unknown schemas, unknown fields, empty required fields, invalid status or
 verdict values, inconsistent `disagrees` flags, and mismatched
 `interesting_findings` counts. It also rejects duplicate checks, duplicate
-matrix rows, and matrix rows that reference checks missing from the report.
+matrix rows, matrix rows that reference checks missing from the report, and
+reports that omit the canonical row for any check pair.
 When `--kernel-report` is supplied, the oracle parses the existing
 `erofs-rs.kernel-replay.v1` JSON report and adds it as a matrix check instead
 of starting QEMU itself.

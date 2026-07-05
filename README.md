@@ -375,7 +375,9 @@ triaged separately from ordinary malformed image rejections. `--json-report`
 writes the same checks, pairwise matrix verdicts, and interesting-finding count
 with the stable `erofs-rs.oracle-report.v1` schema for campaign automation.
 The parser rejects duplicate checks, duplicate matrix rows, and matrix rows
-that reference checks missing from the report.
+that reference checks missing from the report. It also requires the matrix to
+contain the canonical row for every check pair so incomplete oracle reports
+cannot hide a disagreement.
 
 ## Library usage
 
