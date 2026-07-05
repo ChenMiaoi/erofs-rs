@@ -11,6 +11,7 @@ const COVERAGE_CATEGORY: &str = "coverage-interesting";
 const COVERAGE_MANIFEST_FILE: &str = "coverage-manifest.json";
 const COVERAGE_MANIFEST_SCHEMA: &str = "erofs-rs.coverage-corpus.v1";
 const DEFAULT_COVERAGE_TARGET: &str = "unassigned";
+const MINIMIZED_IMPORT_ROOT: &str = "corpus/seeds/minimized";
 
 const KNOWN_RESULTS: &[&str] = &[
     "accepted",
@@ -48,6 +49,7 @@ struct CoverageManifest {
     collected_units: usize,
     unique_hashes: usize,
     duplicates_removed: usize,
+    recommended_import_root: String,
     targets: Vec<CoverageTargetSummary>,
     units: Vec<CoverageManifestUnit>,
 }
@@ -59,6 +61,7 @@ struct CoverageTargetSummary {
     collected_units: usize,
     unique_hashes: usize,
     duplicates_removed: usize,
+    recommended_import_dir: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -69,6 +72,7 @@ struct CoverageManifestUnit {
     sha256: String,
     size_bytes: u64,
     lifecycle: String,
+    recommended_import_path: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -306,6 +310,18 @@ fn relative_path_string(root: &Path, path: &Path) -> String {
     portable_path(path.strip_prefix(root).unwrap_or(path))
 }
 
+fn recommended_import_dir(target: &str) -> String {
+    portable_path(&Path::new(MINIMIZED_IMPORT_ROOT).join(target))
+}
+
+fn recommended_import_path(target: &str, copied_name: &str) -> String {
+    portable_path(
+        &Path::new(MINIMIZED_IMPORT_ROOT)
+            .join(target)
+            .join(copied_name),
+    )
+}
+
 fn infer_coverage_target(input_dir: &Path, path: &Path) -> String {
     let relative = path.strip_prefix(input_dir).unwrap_or(path);
     let components: Vec<String> = relative
@@ -343,6 +359,7 @@ fn coverage_target_summaries(
     stats
         .into_iter()
         .map(|(target, stats)| CoverageTargetSummary {
+            recommended_import_dir: recommended_import_dir(&target),
             target,
             input_units: stats.input_units,
             collected_units: stats.collected_units,
@@ -417,6 +434,7 @@ fn collect_coverage_artifacts(
         stats.hashes.insert(hash.clone());
 
         let copied_path = Path::new(COVERAGE_CATEGORY).join(&copied_name);
+        let recommended_import_path = recommended_import_path(&target, &copied_name);
         let size_bytes = fs::metadata(path)
             .map_err(|e| anyhow::anyhow!("failed to stat {}: {e}", path.display()))?
             .len();
@@ -427,6 +445,7 @@ fn collect_coverage_artifacts(
             sha256: hash.clone(),
             size_bytes,
             lifecycle: lifecycle_bucket(COVERAGE_CATEGORY).to_string(),
+            recommended_import_path,
         });
 
         records.push(ArtifactRecord {
@@ -455,6 +474,7 @@ fn collect_coverage_artifacts(
         collected_units: summary.copied_artifacts,
         unique_hashes: summary.unique_hashes,
         duplicates_removed: summary.duplicates_removed,
+        recommended_import_root: MINIMIZED_IMPORT_ROOT.to_string(),
         targets: coverage_target_summaries(target_stats),
         units: manifest_units,
     };

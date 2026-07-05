@@ -65,11 +65,14 @@ The manifest records:
 - full SHA-256 digests,
 - target names inferred from cargo-fuzz corpus layout,
 - input, collected, and duplicate counts per target,
+- recommended import roots such as `corpus/seeds/minimized/<target>/`,
 - lifecycle buckets such as `queue/userspace`, `crashes/userspace`, and
   `timeouts/userspace`.
 
 The coverage mode does not execute minimization. Run the coverage engine first,
-then collect its minimized output with `corpus --mode coverage`.
+then collect its minimized output with `corpus --mode coverage`. Reviewers can
+use each unit's `recommended_import_path` when deciding which minimized units to
+copy into the long-lived seed corpus.
 
 ## Fuzz Campaign Artifacts
 

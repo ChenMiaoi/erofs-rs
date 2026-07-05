@@ -150,9 +150,10 @@ unique units under `coverage-interesting/` and reports total files, unique
 hashes, coverage-interesting units, crashes, and timeouts. Coverage mode also
 writes `coverage-manifest.json` in the output directory with a stable schema,
 per-target input/collected/duplicate counts, source paths, copied artifact
-paths, sizes, lifecycle buckets, and full SHA-256 digests. For `cargo-fuzz`
-layouts such as `<target>/corpus/<unit>`, the manifest records `<target>` so
-weekly `cmin` output can be reviewed and imported without losing provenance.
+paths, sizes, lifecycle buckets, full SHA-256 digests, and recommended
+`corpus/seeds/minimized/<target>/` import paths. For `cargo-fuzz` layouts such
+as `<target>/corpus/<unit>`, the manifest records `<target>` so weekly `cmin`
+output can be reviewed and imported without losing provenance.
 Reports also include lifecycle buckets such as `queue/userspace`,
 `rejects/checksum`, `crashes/userspace`, and `timeouts/userspace` so long-running
 campaigns can separate expected rejects from actionable triage queues without

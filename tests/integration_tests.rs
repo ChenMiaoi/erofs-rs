@@ -985,8 +985,16 @@ fn test_corpus_coverage_mode_collects_minimized_units() {
     assert_eq!(manifest["total_input_units"], 3);
     assert_eq!(manifest["collected_units"], 2);
     assert_eq!(manifest["duplicates_removed"], 1);
+    assert_eq!(
+        manifest["recommended_import_root"],
+        "corpus/seeds/minimized"
+    );
     assert_eq!(manifest["targets"][0]["target"], "inode_locate");
     assert_eq!(manifest["targets"][0]["collected_units"], 1);
+    assert_eq!(
+        manifest["targets"][0]["recommended_import_dir"],
+        "corpus/seeds/minimized/inode_locate"
+    );
     assert_eq!(manifest["targets"][1]["target"], "superblock_parse");
     assert_eq!(manifest["targets"][1]["input_units"], 2);
     assert_eq!(manifest["targets"][1]["duplicates_removed"], 1);
@@ -998,6 +1006,15 @@ fn test_corpus_coverage_mode_collects_minimized_units() {
             .iter()
             .any(|unit| unit["target"] == "superblock_parse"
                 && unit["source_path"] == "superblock_parse/corpus/unit-a")
+    );
+    assert!(
+        manifest["units"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|unit| unit["target"] == "superblock_parse"
+                && unit["recommended_import_path"]
+                    == "corpus/seeds/minimized/superblock_parse/unit-a")
     );
 }
 
