@@ -191,6 +191,21 @@ make_shared_xattr_root() {
     done
 }
 
+make_xattr_filter_root() {
+    local root="$1"
+    mkdir -p "$root"
+    printf 'xattr name filter matrix\n' > "$root/filter.txt"
+    if ! command -v setfattr >/dev/null 2>&1; then
+        return 1
+    fi
+    setfattr -n user.matrix.filter.alpha -v "alpha" "$root/filter.txt" \
+        2>/dev/null || return 1
+    setfattr -n user.matrix.filter.beta -v "beta" "$root/filter.txt" \
+        2>/dev/null || return 1
+    setfattr -n user.matrix.filter.gamma -v "gamma" "$root/filter.txt" \
+        2>/dev/null
+}
+
 make_acl_root() {
     local root="$1"
     mkdir -p "$root"
@@ -334,6 +349,18 @@ if make_shared_xattr_root "$tmp"; then
         "-b4096"
 else
     echo "WARN: skipped xattr-shared-4k (setfattr unavailable or shared xattr failed)" >&2
+fi
+rm -rf "$tmp"
+
+tmp="$(mktemp -d)"
+if make_xattr_filter_root "$tmp"; then
+    run_mkfs "xattr-name-filter-4k" "$tmp" "xattr_name_filter" \
+        "best_effort" \
+        "block_size:4096,compression:none,xattrs:user,xattrs:name_filter,layout:plain,dir_size:small" \
+        "-b4096" "-Exattr-name-filter"
+else
+    echo "WARN: skipped xattr-name-filter-4k (setfattr unavailable or xattr filter failed)" \
+        >&2
 fi
 rm -rf "$tmp"
 
