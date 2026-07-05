@@ -200,8 +200,9 @@ flags. It also records a deterministic signature used by the text report and
 meaningful tool output line. Sidecars use the stable
 `erofs-rs.fuzz-artifact.v1` schema; replay and bundle parsing rejects unknown
 fields, unknown schemas, malformed SHA-256 digests, empty required fields, and
-empty recorded command vectors before trusting reproduction metadata. The JSON
-bucket report uses the stable
+empty recorded command vectors before trusting reproduction metadata. It also
+rejects sidecars whose signature does not match the recorded classification
+prefix. The JSON bucket report uses the stable
 `erofs-rs.fuzz-buckets.v1` schema and records each signature's count,
 classification, outcome kind, reason, and first-seen example so campaign
 triage does not need to scrape the human report. `--exec-timeout` controls the

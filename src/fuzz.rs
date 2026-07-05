@@ -97,6 +97,13 @@ pub enum FuzzArtifactSidecarError {
     EmptyList(&'static str),
     #[error("fuzz artifact sidecar field {field} has invalid SHA-256 digest: {sha256}")]
     InvalidSha256 { field: &'static str, sha256: String },
+    #[error(
+        "fuzz artifact sidecar signature {signature} does not match classification {classification}"
+    )]
+    SignatureClassificationMismatch {
+        classification: String,
+        signature: String,
+    },
 }
 
 pub fn parse_fuzz_artifact_sidecar(
@@ -123,6 +130,7 @@ pub fn validate_fuzz_artifact_sidecar(
     require_sidecar_nonempty("classification", &sidecar.classification)?;
     require_sidecar_nonempty("reason", &sidecar.reason)?;
     require_sidecar_nonempty("signature", &sidecar.signature)?;
+    validate_sidecar_signature(&sidecar.classification, &sidecar.signature)?;
     require_sidecar_nonempty("stdout_path", &sidecar.stdout_path)?;
     require_sidecar_nonempty("stderr_path", &sidecar.stderr_path)?;
     require_sidecar_sha256("seed_sha256", &sidecar.seed_sha256)?;
@@ -131,6 +139,20 @@ pub fn validate_fuzz_artifact_sidecar(
     validate_sidecar_versions(&sidecar.versions)?;
     for mutation in &sidecar.mutations {
         validate_mutation_record(mutation)?;
+    }
+    Ok(())
+}
+
+fn validate_sidecar_signature(
+    classification: &str,
+    signature: &str,
+) -> std::result::Result<(), FuzzArtifactSidecarError> {
+    let signature_prefix = format!("{classification}: ");
+    if signature != classification && !signature.starts_with(&signature_prefix) {
+        return Err(FuzzArtifactSidecarError::SignatureClassificationMismatch {
+            classification: classification.to_string(),
+            signature: signature.to_string(),
+        });
     }
     Ok(())
 }
@@ -1258,6 +1280,23 @@ mod tests {
                 field: "artifact_sha256",
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn fuzz_sidecar_rejects_signature_mismatch() {
+        let mut sidecar = valid_sidecar();
+        sidecar.signature = "sanitizer_crash: AddressSanitizer".to_string();
+
+        let error = validate_fuzz_artifact_sidecar(&sidecar).unwrap_err();
+
+        assert!(matches!(
+            error,
+            FuzzArtifactSidecarError::SignatureClassificationMismatch {
+                classification,
+                signature,
+            } if classification == "rejected_invalid"
+                && signature == "sanitizer_crash: AddressSanitizer"
         ));
     }
 

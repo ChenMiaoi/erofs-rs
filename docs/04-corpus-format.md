@@ -127,7 +127,8 @@ commands, tool versions, git revisions, fsck status, timeout state, truncation
 state, classification, reason, and signature. The Rust library parser rejects
 unknown sidecar schemas, unknown fields, malformed SHA-256 digests, empty
 required fields, empty command vectors, empty command arguments, and empty
-optional version or mutation string fields.
+optional version or mutation string fields. It also rejects signatures that do
+not match the recorded classification prefix.
 
 Campaign-level files:
 
