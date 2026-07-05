@@ -94,8 +94,11 @@ jobs:
           git submodule update --init --recursive --depth=1
 
       - name: Install Rust toolchain
-        if: steps.candidates.outputs.has_candidates == 'true'
         uses: dtolnay/rust-toolchain@1.85.0
+
+      - name: Validate empty replay summary
+        if: steps.candidates.outputs.has_candidates != 'true'
+        run: cargo run --locked -- kernel-summary --summary kernel-replay/summary.json
 
       - name: Install native dependencies
         if: steps.candidates.outputs.has_candidates == 'true'

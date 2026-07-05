@@ -256,7 +256,8 @@ erofs-rs kernel-summary --summary kernel-replay/summary.json
 
 The Rust parser rejects malformed artifact digests, duplicate candidates or
 report paths, invalid status values, and mismatched candidate or failure counts
-before automation consumes the replay artifact.
+before automation consumes the replay artifact. The scheduled workflow validates
+this summary even when the candidate queue is absent or empty.
 
 ## Finding Bundle Manifest
 
