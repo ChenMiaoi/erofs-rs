@@ -147,7 +147,9 @@ reports, and source bucket counts that do not match the examples.
 `erofs-rs mutate` writes a text manifest beside generated structured mutation
 artifacts. Each row records the output image, target structure, mutated field,
 interesting value, derived mutation class, checksum policy, fsck result, and
-classification reason.
+classification reason. `erofs-rs corpus` rejects malformed manifest rows and
+rows that reference missing artifact files before copying or classifying
+artifacts.
 
 Mutation classes are derived from parser and fsck outcomes:
 

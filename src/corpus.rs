@@ -1,5 +1,5 @@
 use crate::cli::{CorpusArgs, CorpusMode};
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -492,30 +492,51 @@ fn file_hash(path: &Path) -> Result<String> {
     Ok(hex::encode(hasher.finalize()))
 }
 
-fn read_manifest(path: &Path) -> Vec<ManifestEntry> {
-    let content = match fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-
+fn read_manifest(path: &Path) -> Result<Vec<ManifestEntry>> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("failed to read mutation manifest {}", path.display()))?;
     let mut entries = Vec::new();
-    for line in content.lines() {
+    for (line_index, line) in content.lines().enumerate() {
         let line = line.trim();
-        if line.is_empty() || line.starts_with('#') || line.starts_with('-') {
+        if should_skip_manifest_line(line) {
             continue;
         }
         let parts: Vec<&str> = line.split_whitespace().collect();
-        let result_idx = parts.iter().rposition(|p| KNOWN_RESULTS.contains(p));
-        let result_idx = match result_idx {
-            Some(i) if i >= 2 => i,
-            _ => continue,
+        let Some(result_idx) = parts.iter().rposition(|p| KNOWN_RESULTS.contains(p)) else {
+            bail!(
+                "malformed manifest row {}:{}: missing known classification",
+                path.display(),
+                line_index + 1
+            );
+        };
+        if result_idx < 2 {
+            bail!(
+                "malformed manifest row {}:{}: expected artifact path before classification",
+                path.display(),
+                line_index + 1
+            );
+        }
+        let file = parts[0];
+        if file.is_empty() {
+            bail!(
+                "malformed manifest row {}:{}: empty artifact path",
+                path.display(),
+                line_index + 1
+            );
         };
         entries.push(ManifestEntry {
-            file: parts[0].to_string(),
+            file: file.to_string(),
             result: parts[result_idx].to_string(),
         });
     }
-    entries
+    Ok(entries)
+}
+
+fn should_skip_manifest_line(line: &str) -> bool {
+    line.is_empty()
+        || line.starts_with('#')
+        || line.starts_with("output_file")
+        || line.bytes().all(|byte| byte == b'-')
 }
 
 fn classify_artifact(entry: &ManifestEntry) -> String {
@@ -630,7 +651,7 @@ fn collect_manifest_artifacts(
 
     for manifest_path in &manifests {
         let manifest_dir = manifest_path.parent().unwrap_or(Path::new("."));
-        let entries = read_manifest(manifest_path);
+        let entries = read_manifest(manifest_path)?;
         total_files = total_files
             .checked_add(entries.len())
             .ok_or_else(|| anyhow::anyhow!("corpus file count overflows"))?;
@@ -638,7 +659,11 @@ fn collect_manifest_artifacts(
         for entry in entries {
             let file_path = manifest_dir.join(&entry.file);
             if !file_path.exists() {
-                continue;
+                bail!(
+                    "mutation manifest {} references missing artifact {}",
+                    manifest_path.display(),
+                    file_path.display()
+                );
             }
 
             let hash = file_hash(&file_path)?;
@@ -1075,9 +1100,11 @@ pub fn run(args: &CorpusArgs) -> Result<()> {
 mod tests {
     use super::{
         CMIN_SUMMARY_SCHEMA, COVERAGE_MANIFEST_SCHEMA, CminSummaryError, CoverageManifestError,
-        DEFAULT_COVERAGE_TARGET, file_hash, infer_coverage_target, lifecycle_bucket,
-        parse_cmin_summary_report, parse_coverage_manifest, should_collect_coverage_file,
+        DEFAULT_COVERAGE_TARGET, collect_manifest_artifacts, file_hash, infer_coverage_target,
+        lifecycle_bucket, parse_cmin_summary_report, parse_coverage_manifest, read_manifest,
+        should_collect_coverage_file,
     };
+    use crate::cli::{CorpusArgs, CorpusMode};
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
@@ -1146,6 +1173,41 @@ mod tests {
             infer_coverage_target(root, Path::new("corpus/rust-fuzz/unit-a")),
             DEFAULT_COVERAGE_TARGET
         );
+    }
+
+    #[test]
+    fn mutation_manifest_rejects_malformed_rows() {
+        let tmp = TempDir::new().unwrap();
+        let manifest = tmp.path().join("manifest.txt");
+        fs::write(&manifest, "not enough columns\n").unwrap();
+
+        let error = read_manifest(&manifest).unwrap_err();
+
+        assert!(error.to_string().contains("malformed manifest row"));
+        assert!(error.to_string().contains("missing known classification"));
+    }
+
+    #[test]
+    fn corpus_collection_rejects_missing_manifest_artifacts() {
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("input");
+        let output = tmp.path().join("output");
+        fs::create_dir_all(&input).unwrap();
+        fs::write(
+            input.join("manifest.txt"),
+            "missing.erofs target field mutation value class checksum accepted reason\n",
+        )
+        .unwrap();
+        let args = CorpusArgs {
+            input_dir: input.to_string_lossy().to_string(),
+            output_dir: output.to_string_lossy().to_string(),
+            report: tmp.path().join("report.txt").to_string_lossy().to_string(),
+            mode: CorpusMode::Hash,
+        };
+
+        let error = collect_manifest_artifacts(&args, &output).unwrap_err();
+
+        assert!(error.to_string().contains("references missing artifact"));
     }
 
     const VALID_COVERAGE_MANIFEST: &str = r#"{
