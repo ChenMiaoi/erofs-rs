@@ -30,6 +30,7 @@ struct ManifestEntry {
 struct ArtifactRecord {
     file: String,
     category: String,
+    lifecycle: String,
     hash: String,
 }
 
@@ -82,6 +83,22 @@ fn read_manifest(path: &Path) -> Vec<ManifestEntry> {
 
 fn classify_artifact(entry: &ManifestEntry) -> String {
     entry.result.clone()
+}
+
+fn lifecycle_bucket(category: &str) -> &'static str {
+    match category {
+        COVERAGE_CATEGORY | "accepted" | "accepted_with_errors" => "queue/userspace",
+        "rejected_checksum" => "rejects/checksum",
+        "rejected_corruption" => "rejects/corruption",
+        "rejected_invalid" => "rejects/invalid",
+        "rejected_io_error" | "rejected_other" => "rejects/other",
+        "rejected_timeout" => "timeouts/userspace",
+        "rejected_crash" => "crashes/userspace",
+        _ if category.contains("sanitizer") => "crashes/sanitizer",
+        _ if category.contains("kernel") && category.contains("timeout") => "timeouts/kernel",
+        _ if category.contains("kernel") => "crashes/kernel",
+        _ => "queue/userspace",
+    }
 }
 
 fn corpus_mode_name(mode: CorpusMode) -> &'static str {
@@ -204,6 +221,7 @@ fn collect_manifest_artifacts(
             let copied_name = copy_artifact(&file_path, category_dir, &entry.file, &hash)?;
             records.push(ArtifactRecord {
                 file: copied_name,
+                lifecycle: lifecycle_bucket(&category).to_string(),
                 category,
                 hash,
             });
@@ -282,6 +300,7 @@ fn collect_coverage_artifacts(
         records.push(ArtifactRecord {
             file: copied_name,
             category: COVERAGE_CATEGORY.to_string(),
+            lifecycle: lifecycle_bucket(COVERAGE_CATEGORY).to_string(),
             hash,
         });
     }
@@ -341,8 +360,19 @@ fn category_counts(records: &[ArtifactRecord]) -> Vec<(String, usize)> {
     sorted_counts
 }
 
+fn lifecycle_counts(records: &[ArtifactRecord]) -> Vec<(String, usize)> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for record in records {
+        *counts.entry(record.lifecycle.clone()).or_insert(0) += 1;
+    }
+    let mut sorted_counts: Vec<_> = counts.into_iter().collect();
+    sorted_counts.sort_by(|a, b| a.0.cmp(&b.0));
+    sorted_counts
+}
+
 fn write_report(path: &Path, summary: &CorpusSummary, records: &[ArtifactRecord]) -> Result<()> {
     let counts = category_counts(records);
+    let lifecycles = lifecycle_counts(records);
     let mut report_lines = vec![
         "# EROFS Fuzzing Corpus Report".to_string(),
         String::new(),
@@ -374,6 +404,16 @@ fn write_report(path: &Path, summary: &CorpusSummary, records: &[ArtifactRecord]
 
     report_lines.extend([
         String::new(),
+        "## Lifecycle Summary".to_string(),
+        String::new(),
+    ]);
+
+    for (lifecycle, count) in &lifecycles {
+        report_lines.push(format!("- {lifecycle}: {count}"));
+    }
+
+    report_lines.extend([
+        String::new(),
         "## Notes".to_string(),
         String::new(),
         "- `hash` mode reads mutation manifests and deduplicates by full SHA-256.".to_string(),
@@ -386,17 +426,21 @@ fn write_report(path: &Path, summary: &CorpusSummary, records: &[ArtifactRecord]
         "- `rejected_io_error` / `rejected_corruption` / `rejected_invalid`: clean rejection paths.".to_string(),
         "- `rejected_timeout`: fsck exceeded the configured timeout.".to_string(),
         "- `rejected_crash`: fsck terminated because of a fatal signal.".to_string(),
+        "- Lifecycle buckets map artifacts into queue, rejects, crashes, and timeouts for triage.".to_string(),
         String::new(),
         "## All Collected Artifacts".to_string(),
         String::new(),
-        format!("{:<50} {:<25} {:<64}", "file", "category", "hash"),
-        "-".repeat(141),
+        format!(
+            "{:<50} {:<25} {:<22} {:<64}",
+            "file", "category", "lifecycle", "hash"
+        ),
+        "-".repeat(164),
     ]);
 
     for record in records {
         report_lines.push(format!(
-            "{:<50} {:<25} {}",
-            record.file, record.category, record.hash
+            "{:<50} {:<25} {:<22} {}",
+            record.file, record.category, record.lifecycle, record.hash
         ));
     }
 
@@ -444,7 +488,7 @@ pub fn run(args: &CorpusArgs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{file_hash, should_collect_coverage_file};
+    use super::{file_hash, lifecycle_bucket, should_collect_coverage_file};
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
@@ -459,6 +503,23 @@ mod tests {
             file_hash(&path).unwrap(),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    #[test]
+    fn lifecycle_bucket_maps_fsck_classifications() {
+        assert_eq!(lifecycle_bucket("accepted"), "queue/userspace");
+        assert_eq!(lifecycle_bucket("coverage-interesting"), "queue/userspace");
+        assert_eq!(lifecycle_bucket("rejected_checksum"), "rejects/checksum");
+        assert_eq!(
+            lifecycle_bucket("rejected_corruption"),
+            "rejects/corruption"
+        );
+        assert_eq!(lifecycle_bucket("rejected_invalid"), "rejects/invalid");
+        assert_eq!(lifecycle_bucket("rejected_io_error"), "rejects/other");
+        assert_eq!(lifecycle_bucket("rejected_timeout"), "timeouts/userspace");
+        assert_eq!(lifecycle_bucket("rejected_crash"), "crashes/userspace");
+        assert_eq!(lifecycle_bucket("asan_sanitizer"), "crashes/sanitizer");
+        assert_eq!(lifecycle_bucket("kernel_oops"), "crashes/kernel");
     }
 
     #[test]

@@ -922,6 +922,8 @@ fn test_corpus_classification_mode_preserves_duplicates() {
     assert!(content.contains("Collected artifacts: 2"));
     assert!(content.contains("Unique hashes: 1"));
     assert!(content.contains("Crashes: 2"));
+    assert!(content.contains("## Lifecycle Summary"));
+    assert!(content.contains("- crashes/userspace: 2"));
     assert_eq!(
         fs::read_dir(artifacts.join("rejected_crash"))
             .unwrap()
@@ -955,6 +957,7 @@ fn test_corpus_coverage_mode_collects_minimized_units() {
     assert!(content.contains("Total files: 2"));
     assert!(content.contains("Unique hashes: 1"));
     assert!(content.contains("Coverage-interesting units: 1"));
+    assert!(content.contains("- queue/userspace: 1"));
     assert_eq!(
         fs::read_dir(artifacts.join("coverage-interesting"))
             .unwrap()
