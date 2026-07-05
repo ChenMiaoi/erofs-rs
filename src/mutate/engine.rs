@@ -90,6 +90,16 @@ pub(super) struct DeviceMutation {
     pub(super) writes: Vec<FieldWrite>,
 }
 
+pub(super) struct GrammarMutation {
+    pub(super) output_name: String,
+    pub(super) target_desc: String,
+    pub(super) field_name: &'static str,
+    pub(super) mutation_name: &'static str,
+    pub(super) value_width: FieldWidth,
+    pub(super) value: u64,
+    pub(super) writes: Vec<FieldWrite>,
+}
+
 pub(super) fn seed_name(input: &str) -> String {
     Path::new(input)
         .file_stem()
@@ -531,6 +541,66 @@ pub(super) fn add_device_mutation(
     entries.push(MutatedEntry {
         output_name: mutation.output_name,
         family: "device".to_string(),
+        target_desc: mutation.target_desc,
+        field_name: mutation.field_name.to_string(),
+        mutation_name: mutation.mutation_name.to_string(),
+        value_hex: format!(
+            "0x{:0width$X}",
+            mutation.value,
+            width = mutation.value_width.bytes() * 2
+        ),
+        mutation_class: mutation_class.to_string(),
+        checksum_policy: checksum_policy.to_string(),
+        parser_outcome,
+        classification: classification.to_string(),
+        reason: reason.to_string(),
+    });
+
+    println!(
+        "[{classification:>20}] {:>15}.{:<25} -> {reason}",
+        mutation.field_name, mutation.mutation_name
+    );
+
+    Ok(true)
+}
+
+pub(super) fn add_grammar_mutation(
+    entries: &mut Vec<MutatedEntry>,
+    image: &Image,
+    args: &MutateArgs,
+    mutation: GrammarMutation,
+) -> Result<bool> {
+    let mut changed = false;
+    for write in &mutation.writes {
+        if image.read_field(write.abs_offset, write.width)? != write.value {
+            changed = true;
+            break;
+        }
+    }
+    if !changed {
+        return Ok(false);
+    }
+
+    let mut mutated = image.clone();
+    for write in &mutation.writes {
+        mutated.write_field(write.abs_offset, write.width, write.value)?;
+    }
+
+    if args.fix_checksum {
+        fix_checksum(&mut mutated)?;
+    }
+
+    let output_path = Path::new(&args.output_dir).join(&mutation.output_name);
+    write_image(&output_path, &mutated)?;
+
+    let (classification, reason) = classify_mutated_image(args, &output_path)?;
+    let parser_outcome = parser_outcome(&mutated);
+    let (mutation_class, checksum_policy) =
+        mutation_metadata(args.fix_checksum, &parser_outcome, &classification);
+
+    entries.push(MutatedEntry {
+        output_name: mutation.output_name,
+        family: "grammar".to_string(),
         target_desc: mutation.target_desc,
         field_name: mutation.field_name.to_string(),
         mutation_name: mutation.mutation_name.to_string(),

@@ -127,10 +127,14 @@ erofs-rs mutate \
 ```
 
 `--target` accepts `superblock`, `inode`, `dirent`, `xattr`, `chunk`,
-`compression`, `fragment`, `device`, `cross`, or `all`.
+`compression`, `fragment`, `device`, `grammar`, `cross`, or `all`.
 `mutate` runs `fsck.erofs` for each generated image and accepts the same
 execution-limit flags as `fuzz`: `--exec-timeout`, `--max-output-bytes`,
 `--rss-limit-mb`, and `--no-kill-process-group`.
+The `grammar` target plans mutations from an EROFS field/grammar catalog
+rather than a single hand-written family. It currently covers inline xattr
+shared areas, long xattr prefixes, xattr name filters, packed fragments,
+device tables, and compressed layout map headers.
 Mutation manifests record each artifact's mutation family, parser outcome,
 oracle classification, derived mutation class such as `grammar_preserving`,
 `semantic_invalid`, or `checksum_invalid`, and whether the superblock checksum

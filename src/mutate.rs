@@ -1,5 +1,6 @@
 mod engine;
 mod fields;
+mod grammar;
 mod manifest;
 mod targets;
 
@@ -7,6 +8,7 @@ use crate::cli::MutateArgs;
 use crate::image::read_image;
 use anyhow::{Result, bail};
 use engine::sha256_hex;
+use grammar::mutate_grammar;
 use manifest::write_manifest;
 use std::collections::HashMap;
 use std::fs;
@@ -38,6 +40,7 @@ pub fn run(args: &MutateArgs) -> Result<()> {
         "compression" => all_entries.extend(mutate_compressions(&image, args)?),
         "fragment" => all_entries.extend(mutate_fragments(&image, args)?),
         "device" => all_entries.extend(mutate_devices(&image, args)?),
+        "grammar" => all_entries.extend(mutate_grammar(&image, args)?),
         "cross" => all_entries.extend(mutate_cross_fields(&image, args)?),
         "all" => {
             all_entries.extend(mutate_superblock(&image, args)?);
@@ -48,10 +51,11 @@ pub fn run(args: &MutateArgs) -> Result<()> {
             all_entries.extend(mutate_compressions(&image, args)?);
             all_entries.extend(mutate_fragments(&image, args)?);
             all_entries.extend(mutate_devices(&image, args)?);
+            all_entries.extend(mutate_grammar(&image, args)?);
             all_entries.extend(mutate_cross_fields(&image, args)?);
         }
         _ => bail!(
-            "unknown mutation target: {} (expected superblock|inode|dirent|xattr|chunk|compression|fragment|device|cross|all)",
+            "unknown mutation target: {} (expected superblock|inode|dirent|xattr|chunk|compression|fragment|device|grammar|cross|all)",
             args.target
         ),
     }
@@ -83,6 +87,7 @@ pub fn run(args: &MutateArgs) -> Result<()> {
 mod tests {
     use super::engine::mutation_metadata;
     use super::fields::SUPERBLOCK_FIELDS;
+    use super::grammar::GRAMMAR_COVERAGE_MODEL;
 
     #[test]
     fn superblock_mutations_cover_late_format_fields() {
@@ -141,5 +146,44 @@ mod tests {
             mutation_metadata(true, "strict_accepted_tolerant_clean", "sanitizer_crash"),
             ("unsafe_userspace", "checksum_repaired")
         );
+    }
+
+    #[test]
+    fn grammar_model_covers_deep_semantic_areas() {
+        let cases: Vec<_> = GRAMMAR_COVERAGE_MODEL
+            .iter()
+            .map(|case| case.case_name)
+            .collect();
+        for expected in [
+            "xattr_shared_area_valid",
+            "xattr_shared_area_overrun",
+            "xattr_long_prefix_entry",
+            "xattr_filter_enabled",
+            "xattr_filter_reserved_nonzero",
+            "packed_fragment_featured",
+            "packed_fragment_without_feature",
+            "device_table_semantic",
+            "device_table_slot_overrun",
+            "compressed_layout_compact",
+            "compressed_layout_big_pcluster_pair",
+            "compressed_layout_reserved_clusterbits",
+        ] {
+            assert!(cases.contains(&expected), "missing {expected}");
+        }
+
+        let features: Vec<_> = GRAMMAR_COVERAGE_MODEL
+            .iter()
+            .map(|case| case.feature)
+            .collect();
+        for expected in [
+            "xattr_shared_area",
+            "xattr_long_prefix",
+            "xattr_filter",
+            "packed_fragments",
+            "device_table",
+            "compressed_layout",
+        ] {
+            assert!(features.contains(&expected), "missing {expected}");
+        }
     }
 }

@@ -267,6 +267,12 @@ classification reason. `erofs-rs corpus` rejects malformed manifest rows and
 rows that reference missing artifact files before copying or classifying
 artifacts.
 
+The `grammar` mutation family is generated from a small EROFS field grammar
+catalog rather than one isolated target table. It records semantic cases for
+inline xattr shared areas, long xattr prefixes, xattr filters, packed
+fragments, device tables, and compressed layout headers while still writing the
+same manifest row format as the older mutation families.
+
 Mutation classes are derived from parser and fsck outcomes:
 
 - `grammar_preserving` for images accepted by both strict parser and fsck,

@@ -1,16 +1,23 @@
 use crate::image::FieldWidth;
 
+pub(super) const EROFS_FEATURE_COMPAT_XATTR_FILTER: u64 = 0x00000004;
+pub(super) const EROFS_FEATURE_COMPAT_PLAIN_XATTR_PFX: u64 = 0x00000010;
+pub(super) const EROFS_FEATURE_COMPAT_ISHARE_XATTRS: u64 = 0x00000020;
 pub(super) const EROFS_FEATURE_INCOMPAT_48BIT: u32 = 0x00000080;
 pub(super) const EROFS_FEATURE_INCOMPAT_DEVICE_TABLE: u64 = 0x00000008;
 pub(super) const EROFS_FEATURE_INCOMPAT_FRAGMENTS: u64 = 0x00000020;
+pub(super) const EROFS_FEATURE_INCOMPAT_XATTR_PREFIXES: u64 = 0x00000040;
 pub(super) const EROFS_INODE_COMPRESSED_FULL: u64 = 1;
 pub(super) const EROFS_INODE_COMPRESSED_COMPACT: u64 = 3;
 pub(super) const EROFS_INODE_CHUNK_BASED: u64 = 4;
 pub(super) const EROFS_INODE_SLOT_SIZE: usize = 32;
+pub(super) const EROFS_XATTR_FILTER_DEFAULT: u64 = 0xFFFF_FFFF;
+pub(super) const EROFS_XATTR_LONG_PREFIX: u64 = 0x80;
 pub(super) const EROFS_CHUNK_FORMAT_INDEXES: u64 = 0x0020;
 pub(super) const EROFS_CHUNK_FORMAT_UNSUPPORTED_BIT: u64 = 0x0080;
 pub(super) const EROFS_DEVT_SLOT_SIZE: usize = 128;
 pub(super) const Z_EROFS_ADVISE_BIG_PCLUSTER_1: u64 = 0x0002;
+pub(super) const Z_EROFS_ADVISE_BIG_PCLUSTER_2: u64 = 0x0004;
 pub(super) const Z_EROFS_ADVISE_UNSUPPORTED_BIT: u64 = 0x8000;
 pub(super) const Z_EROFS_CLUSTERBITS_RESERVED_BIT: u64 = 0x10;
 pub(super) const Z_EROFS_FRAGMENT_INODE_MASK: u64 = 1 << 63;
@@ -56,8 +63,13 @@ pub(super) const SUPERBLOCK_FIELDS: &[MutationDef] = &[
         values: &[
             (0x00000000, "clear_all"),
             (0xFFFFFFFF, "all_ones"),
-            (0x00000004, "set_unknown_bit"),
-            (0x00000010, "set_xattr_filter"),
+            (EROFS_FEATURE_COMPAT_XATTR_FILTER, "set_xattr_filter"),
+            (
+                EROFS_FEATURE_COMPAT_PLAIN_XATTR_PFX,
+                "set_plain_xattr_prefix",
+            ),
+            (EROFS_FEATURE_COMPAT_ISHARE_XATTRS, "set_ishare_xattrs"),
+            (0x00000040, "set_unknown_compat_bit"),
         ],
     },
     MutationDef {
