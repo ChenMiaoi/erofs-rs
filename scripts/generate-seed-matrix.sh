@@ -162,6 +162,19 @@ make_xattr_root() {
     setfattr -n user.matrix -v "seed-matrix" "$root/xattr.txt" 2>/dev/null
 }
 
+make_long_xattr_prefix_root() {
+    local root="$1"
+    mkdir -p "$root"
+    printf 'long prefix xattr matrix\n' > "$root/long-prefix.txt"
+    if ! command -v setfattr >/dev/null 2>&1; then
+        return 1
+    fi
+    setfattr -n user.matrix.longprefix.alpha -v "alpha" "$root/long-prefix.txt" \
+        2>/dev/null || return 1
+    setfattr -n user.matrix.longprefix.beta -v "beta" "$root/long-prefix.txt" \
+        2>/dev/null
+}
+
 make_acl_root() {
     local root="$1"
     mkdir -p "$root"
@@ -282,6 +295,18 @@ if make_xattr_root "$tmp"; then
         "-b4096"
 else
     echo "WARN: skipped xattr-user-4k (setfattr unavailable or user xattr failed)" >&2
+fi
+rm -rf "$tmp"
+
+tmp="$(mktemp -d)"
+if make_long_xattr_prefix_root "$tmp"; then
+    run_mkfs "xattr-long-prefix-4k" "$tmp" "xattr_long_prefix" \
+        "best_effort" \
+        "block_size:4096,compression:none,xattrs:user,xattrs:long_prefix,layout:plain,dir_size:small" \
+        "-b4096" "--xattr-prefix=user.matrix.longprefix."
+else
+    echo "WARN: skipped xattr-long-prefix-4k (setfattr unavailable or long-prefix xattr failed)" \
+        >&2
 fi
 rm -rf "$tmp"
 

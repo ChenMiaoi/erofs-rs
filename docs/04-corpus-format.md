@@ -50,8 +50,8 @@ ACL, socket, or device-node support. Older manifests without `requirement` are
 interpreted as `required` by the Rust validator.
 
 Feature tags use `namespace:value` strings. Prefer stable tags such as
-`block_size:4096`, `compression:lz4`, `layout:chunked`, `xattrs:user`, and
-`dir_size:multiblock` over prose descriptions.
+`block_size:4096`, `compression:lz4`, `layout:chunked`, `xattrs:user`,
+`xattrs:long_prefix`, and `dir_size:multiblock` over prose descriptions.
 
 ## Coverage Corpus Manifest
 
