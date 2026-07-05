@@ -126,7 +126,7 @@ erofs-rs mutate \
     --fix-checksum
 ```
 
-`--target` accepts `superblock`, `inode`, `dirent`, or `all`.
+`--target` accepts `superblock`, `inode`, `dirent`, `cross`, or `all`.
 
 ### `corpus` – corpus management
 

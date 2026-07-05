@@ -473,6 +473,29 @@ fn test_mutate_dirent() {
 }
 
 #[test]
+fn test_mutate_cross_fields() {
+    let tmp = TempDir::new().unwrap();
+    let out_dir = tmp.path().join("cross");
+    let manifest = tmp.path().join("manifest.txt");
+
+    let args = erofs_rs::cli::MutateArgs {
+        input: fixture("single.erofs").to_string_lossy().to_string(),
+        output_dir: out_dir.to_string_lossy().to_string(),
+        manifest: manifest.to_string_lossy().to_string(),
+        fsck: fsck_path().to_string_lossy().to_string(),
+        target: "cross".to_string(),
+        fix_checksum: true,
+    };
+    erofs_rs::mutate::run(&args).unwrap();
+
+    assert!(manifest.exists());
+    assert!(fs::read_dir(&out_dir).unwrap().count() > 0);
+    let content = fs::read_to_string(&manifest).unwrap();
+    assert!(content.contains("# Families: cross="));
+    assert!(content.contains("rootnid_to_non_directory"));
+}
+
+#[test]
 fn test_corpus_manager() {
     let tmp = TempDir::new().unwrap();
     let mutated = tmp.path().join("mutated");

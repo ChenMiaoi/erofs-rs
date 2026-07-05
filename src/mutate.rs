@@ -3,12 +3,14 @@ use crate::cli::MutateArgs;
 use crate::dirent::locate_dirents_in_image;
 use crate::fsck::{classify_fsck_result, run_fsck};
 use crate::image::{EROFS_SUPER_OFFSET, FieldWidth, Image, read_image, write_image};
-use crate::inode::{is_extended_inode, locate_inodes};
+use crate::inode::{inode_data_offset, is_directory_inode, is_extended_inode, locate_inodes};
 use crate::parse::{ParseMode, parse_image};
 use anyhow::{Result, bail};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+
+const EROFS_FEATURE_INCOMPAT_48BIT: u32 = 0x00000080;
 
 /// A single field mutation definition.
 struct MutationDef {
@@ -486,6 +488,16 @@ struct MutatedEntry {
     reason: String,
 }
 
+struct CrossFieldMutation {
+    output_name: String,
+    target_desc: String,
+    field_name: &'static str,
+    mutation_name: &'static str,
+    abs_offset: usize,
+    width: FieldWidth,
+    new_value: u64,
+}
+
 fn seed_name(input: &str) -> String {
     Path::new(input)
         .file_stem()
@@ -506,6 +518,56 @@ fn parser_outcome(image: &Image) -> String {
         Err(_) if strict_accepted => "strict_accepted_tolerant_failed".to_string(),
         Err(_) => "strict_rejected_tolerant_failed".to_string(),
     }
+}
+
+fn add_cross_field_mutation(
+    entries: &mut Vec<MutatedEntry>,
+    image: &Image,
+    args: &MutateArgs,
+    mutation: CrossFieldMutation,
+) -> Result<bool> {
+    let original_value = image.read_field(mutation.abs_offset, mutation.width)?;
+    if original_value == mutation.new_value {
+        return Ok(false);
+    }
+
+    let mut mutated = image.clone();
+    mutated.write_field(mutation.abs_offset, mutation.width, mutation.new_value)?;
+
+    if args.fix_checksum {
+        fix_checksum(&mut mutated)?;
+    }
+
+    let output_path = Path::new(&args.output_dir).join(&mutation.output_name);
+    write_image(&output_path, &mutated)?;
+
+    let result = run_fsck(&args.fsck, &output_path, &[])?;
+    let (classification, reason) =
+        classify_fsck_result(result.exit_code, &result.stderr, &result.stdout);
+    let parser_outcome = parser_outcome(&mutated);
+
+    entries.push(MutatedEntry {
+        output_name: mutation.output_name,
+        family: "cross".to_string(),
+        target_desc: mutation.target_desc,
+        field_name: mutation.field_name.to_string(),
+        mutation_name: mutation.mutation_name.to_string(),
+        value_hex: format!(
+            "0x{:0width$X}",
+            mutation.new_value,
+            width = mutation.width.bytes() * 2
+        ),
+        parser_outcome,
+        classification: classification.to_string(),
+        reason: reason.to_string(),
+    });
+
+    println!(
+        "[{classification:>20}] {:>15}.{:<25} -> {reason}",
+        mutation.field_name, mutation.mutation_name
+    );
+
+    Ok(true)
 }
 
 fn mutate_superblock(image: &Image, args: &MutateArgs) -> Result<Vec<MutatedEntry>> {
@@ -698,6 +760,179 @@ fn mutate_dirents(image: &Image, args: &MutateArgs) -> Result<Vec<MutatedEntry>>
     Ok(entries)
 }
 
+fn mutate_cross_fields(image: &Image, args: &MutateArgs) -> Result<Vec<MutatedEntry>> {
+    let seed = seed_name(&args.input);
+    let sb = image.superblock()?;
+    let inodes = locate_inodes(image, &sb)?;
+    let dirents = locate_dirents_in_image(image, &sb, &inodes)?;
+    let block_size = usize::try_from(sb.block_size)
+        .map_err(|_| anyhow::anyhow!("block size does not fit host usize"))?;
+    let mut entries = Vec::new();
+
+    println!(
+        "Found {} inodes, {} directory entries for cross-field mutations",
+        inodes.len(),
+        dirents.len()
+    );
+
+    for inode in &inodes {
+        if inode.nid == sb.rootnid || is_directory_inode(image, inode.offset)? {
+            continue;
+        }
+        let (root_rel_offset, root_width, root_field) =
+            if sb.feature_incompat & EROFS_FEATURE_INCOMPAT_48BIT != 0 {
+                (0x70usize, FieldWidth::U64, "root_nid_8b")
+            } else {
+                (0x0Eusize, FieldWidth::U16, "rootnid")
+            };
+        if inode.nid > root_width.max_value() {
+            break;
+        }
+        let root_offset = EROFS_SUPER_OFFSET
+            .checked_add(root_rel_offset)
+            .ok_or_else(|| anyhow::anyhow!("root nid field offset overflows"))?;
+        if add_cross_field_mutation(
+            &mut entries,
+            image,
+            args,
+            CrossFieldMutation {
+                output_name: format!("{seed}_cross_rootnid_to_non_directory.erofs"),
+                target_desc: format!("superblock->{}", inode.desc),
+                field_name: root_field,
+                mutation_name: "rootnid_to_non_directory",
+                abs_offset: root_offset,
+                width: root_width,
+                new_value: inode.nid,
+            },
+        )? {
+            break;
+        }
+    }
+
+    let block_padding = block_size
+        .checked_sub(1)
+        .ok_or_else(|| anyhow::anyhow!("block size must be nonzero"))?;
+    let image_blocks = image
+        .len()
+        .checked_add(block_padding)
+        .ok_or_else(|| anyhow::anyhow!("image block count overflows"))?
+        / block_size;
+    if image_blocks > 1 && image_blocks - 1 <= u32::MAX as usize {
+        let blocks_offset = EROFS_SUPER_OFFSET
+            .checked_add(0x24)
+            .ok_or_else(|| anyhow::anyhow!("blocks_lo field offset overflows"))?;
+        let _ = add_cross_field_mutation(
+            &mut entries,
+            image,
+            args,
+            CrossFieldMutation {
+                output_name: format!("{seed}_cross_blocks_below_image_extent.erofs"),
+                target_desc: "superblock".to_string(),
+                field_name: "blocks_lo",
+                mutation_name: "blocks_below_image_extent",
+                abs_offset: blocks_offset,
+                width: FieldWidth::U32,
+                new_value: (image_blocks - 1) as u64,
+            },
+        )?;
+    }
+
+    for inode in &inodes {
+        let Ok(data_offset) = inode_data_offset(image, &sb, inode.offset) else {
+            continue;
+        };
+        let data_block = data_offset / block_size;
+        if data_block > u32::MAX as usize {
+            continue;
+        }
+        let meta_offset = EROFS_SUPER_OFFSET
+            .checked_add(0x28)
+            .ok_or_else(|| anyhow::anyhow!("meta_blkaddr field offset overflows"))?;
+        if add_cross_field_mutation(
+            &mut entries,
+            image,
+            args,
+            CrossFieldMutation {
+                output_name: format!("{seed}_cross_meta_blkaddr_to_file_data.erofs"),
+                target_desc: format!("superblock->{}", inode.desc),
+                field_name: "meta_blkaddr",
+                mutation_name: "meta_blkaddr_to_file_data",
+                abs_offset: meta_offset,
+                width: FieldWidth::U32,
+                new_value: data_block as u64,
+            },
+        )? {
+            break;
+        }
+    }
+
+    for dirent in dirents.iter().filter(|dirent| dirent.entry_idx == 0) {
+        let nameoff_offset = dirent
+            .offset
+            .checked_add(0x08)
+            .ok_or_else(|| anyhow::anyhow!("dirent nameoff offset overflows"))?;
+        if add_cross_field_mutation(
+            &mut entries,
+            image,
+            args,
+            CrossFieldMutation {
+                output_name: format!("{seed}_cross_nameoff_over_header.erofs"),
+                target_desc: dirent.desc.clone(),
+                field_name: "nameoff",
+                mutation_name: "nameoff_over_header",
+                abs_offset: nameoff_offset,
+                width: FieldWidth::U16,
+                new_value: 12,
+            },
+        )? {
+            break;
+        }
+    }
+
+    for inode in &inodes {
+        let i_format = image.read_field(inode.offset, FieldWidth::U16)?;
+        let datalayout = (i_format >> 1) & 0x7;
+        if datalayout != 2 {
+            continue;
+        }
+        let extended = is_extended_inode(image, inode.offset)?;
+        let width = if extended {
+            FieldWidth::U64
+        } else {
+            FieldWidth::U32
+        };
+        let i_size_offset = inode
+            .offset
+            .checked_add(0x08)
+            .ok_or_else(|| anyhow::anyhow!("inode i_size offset overflows"))?;
+        let new_size = u64::from(sb.block_size)
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("inline size mutation overflows"))?;
+        if add_cross_field_mutation(
+            &mut entries,
+            image,
+            args,
+            CrossFieldMutation {
+                output_name: format!("{seed}_cross_inline_size_mismatch.erofs"),
+                target_desc: inode.desc.clone(),
+                field_name: "i_size",
+                mutation_name: "inline_size_mismatch",
+                abs_offset: i_size_offset,
+                width,
+                new_value: new_size,
+            },
+        )? {
+            break;
+        }
+    }
+
+    if entries.is_empty() {
+        println!("WARNING: No cross-field mutations generated. Skipping.");
+    }
+
+    Ok(entries)
+}
+
 fn write_manifest<P: AsRef<Path>>(
     path: P,
     args: &MutateArgs,
@@ -792,13 +1027,15 @@ pub fn run(args: &MutateArgs) -> Result<()> {
         "superblock" => all_entries.extend(mutate_superblock(&image, args)?),
         "inode" => all_entries.extend(mutate_inodes(&image, args)?),
         "dirent" => all_entries.extend(mutate_dirents(&image, args)?),
+        "cross" => all_entries.extend(mutate_cross_fields(&image, args)?),
         "all" => {
             all_entries.extend(mutate_superblock(&image, args)?);
             all_entries.extend(mutate_inodes(&image, args)?);
             all_entries.extend(mutate_dirents(&image, args)?);
+            all_entries.extend(mutate_cross_fields(&image, args)?);
         }
         _ => bail!(
-            "unknown mutation target: {} (expected superblock|inode|dirent|all)",
+            "unknown mutation target: {} (expected superblock|inode|dirent|cross|all)",
             args.target
         ),
     }
