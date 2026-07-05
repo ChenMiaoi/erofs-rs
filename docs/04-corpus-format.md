@@ -240,7 +240,8 @@ bundle.json` to create the manifest from validated sidecar metadata; pass
 reports. The command verifies the artifact digest against the sidecar before
 writing the manifest. JSON replay, oracle, and kernel reports are parsed with
 their stable schemas before they enter the bundle; legacy text reports remain
-opaque attachments. Manifest parsing rejects non-actionable classifications,
+opaque attachments. JSON replay and kernel reports must match the bundled
+artifact SHA-256. Manifest parsing rejects non-actionable classifications,
 signatures that do not match the classification prefix, and duplicate paths so
 each bundle role points at a distinct attachment.
 

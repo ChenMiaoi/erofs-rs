@@ -283,7 +283,8 @@ points at a distinct attachment.
 artifact SHA-256, includes captured stdout/stderr when the sidecar records
 them, and hashes any optional replay, oracle, or kernel report paths supplied
 on the command line. JSON replay, oracle, and kernel reports are parsed with
-their stable schemas before they enter the bundle; legacy text reports remain
+their stable schemas before they enter the bundle. JSON replay and kernel
+reports must match the bundled artifact SHA-256; legacy text reports remain
 opaque attachments.
 
 ### Coverage-guided fuzz targets

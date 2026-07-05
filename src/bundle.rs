@@ -112,7 +112,11 @@ fn resolve_optional_report(path: Option<&str>, field: &str) -> Result<Option<Pat
         .transpose()
 }
 
-fn validate_optional_json_report(path: Option<&PathBuf>, kind: OptionalReportKind) -> Result<()> {
+fn validate_optional_json_report(
+    path: Option<&PathBuf>,
+    kind: OptionalReportKind,
+    artifact_sha256: &str,
+) -> Result<()> {
     let Some(path) = path else {
         return Ok(());
     };
@@ -123,16 +127,48 @@ fn validate_optional_json_report(path: Option<&PathBuf>, kind: OptionalReportKin
     }
 
     match kind {
-        OptionalReportKind::Replay => parse_replay_report(&content)
-            .map(|_| ())
-            .with_context(|| format!("failed to parse replay_report {}", path.display())),
+        OptionalReportKind::Replay => {
+            let report = parse_replay_report(&content)
+                .with_context(|| format!("failed to parse replay_report {}", path.display()))?;
+            validate_report_sha256(
+                "replay_report",
+                path,
+                artifact_sha256,
+                &report.artifact_sha256,
+            )
+        }
         OptionalReportKind::Oracle => parse_oracle_json_report(&content)
             .map(|_| ())
             .with_context(|| format!("failed to parse oracle_report {}", path.display())),
-        OptionalReportKind::Kernel => parse_kernel_replay_report(&content)
-            .map(|_| ())
-            .with_context(|| format!("failed to parse kernel_report {}", path.display())),
+        OptionalReportKind::Kernel => {
+            let report = parse_kernel_replay_report(&content)
+                .with_context(|| format!("failed to parse kernel_report {}", path.display()))?;
+            let Some(report_sha256) = report.artifact_sha256.as_deref() else {
+                bail!(
+                    "kernel_report missing artifact SHA-256 for {}",
+                    path.display()
+                );
+            };
+            validate_report_sha256("kernel_report", path, artifact_sha256, report_sha256)
+        }
     }
+}
+
+fn validate_report_sha256(
+    field: &str,
+    path: &Path,
+    bundle_sha256: &str,
+    report_sha256: &str,
+) -> Result<()> {
+    if bundle_sha256 != report_sha256 {
+        bail!(
+            "{field} artifact SHA-256 mismatch for {}: bundle={}, report={}",
+            path.display(),
+            bundle_sha256,
+            report_sha256
+        );
+    }
+    Ok(())
 }
 
 fn portable_path(path: &Path) -> String {
@@ -185,9 +221,21 @@ fn build_manifest(args: &BundleArgs) -> Result<FindingBundleManifest> {
     let replay_report = resolve_optional_report(args.replay_report.as_deref(), "replay_report")?;
     let oracle_report = resolve_optional_report(args.oracle_report.as_deref(), "oracle_report")?;
     let kernel_report = resolve_optional_report(args.kernel_report.as_deref(), "kernel_report")?;
-    validate_optional_json_report(replay_report.as_ref(), OptionalReportKind::Replay)?;
-    validate_optional_json_report(oracle_report.as_ref(), OptionalReportKind::Oracle)?;
-    validate_optional_json_report(kernel_report.as_ref(), OptionalReportKind::Kernel)?;
+    validate_optional_json_report(
+        replay_report.as_ref(),
+        OptionalReportKind::Replay,
+        &artifact_sha256,
+    )?;
+    validate_optional_json_report(
+        oracle_report.as_ref(),
+        OptionalReportKind::Oracle,
+        &artifact_sha256,
+    )?;
+    validate_optional_json_report(
+        kernel_report.as_ref(),
+        OptionalReportKind::Kernel,
+        &artifact_sha256,
+    )?;
 
     let artifact_size = fs::metadata(&artifact_path)
         .with_context(|| format!("failed to stat artifact {}", artifact_path.display()))?
@@ -315,6 +363,72 @@ mod tests {
         .unwrap();
     }
 
+    fn write_replay_report_fixture(
+        replay_report: &Path,
+        sidecar: &Path,
+        artifact: &Path,
+        artifact_sha256: &str,
+    ) {
+        fs::write(
+            replay_report,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "schema": "erofs-rs.replay-report.v1",
+                "sidecar_path": sidecar.to_string_lossy(),
+                "artifact_path": artifact.to_string_lossy(),
+                "artifact_sha256": artifact_sha256,
+                "fsck_path": "fsck.erofs",
+                "rng_seed": 1,
+                "iteration": 1,
+                "strategy": "mutation",
+                "seed_name": "seed.erofs",
+                "original": {
+                    "classification": "accepted_with_errors",
+                    "reason": "fsck accepted the image",
+                    "exit_code": 0,
+                    "timed_out": false,
+                    "signature": "accepted_with_errors: fsck printed errors"
+                },
+                "replay": {
+                    "classification": "accepted_with_errors",
+                    "reason": "fsck accepted the image",
+                    "exit_code": 0,
+                    "signal": null,
+                    "timed_out": false,
+                    "killed_process_group": false,
+                    "rss_limit_mb": null,
+                    "stdout_truncated": false,
+                    "stderr_truncated": false
+                },
+                "comparison": {
+                    "classification_match": true,
+                    "exit_code_match": true,
+                    "timeout_match": true,
+                    "replay_match": true
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_kernel_report_fixture(kernel_report: &Path, artifact_sha256: Option<&str>) {
+        fs::write(
+            kernel_report,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "schema": "erofs-rs.kernel-replay.v1",
+                "artifact_sha256": artifact_sha256,
+                "kernel_git": null,
+                "qemu_exit_code": 0,
+                "outcome": "accepted",
+                "message": "mounted and traversed",
+                "signature": "kernel_accepted: mounted and traversed",
+                "dangerous_pattern": null
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn bundle_manifest_uses_sidecar_metadata_and_sibling_files() {
         let tmp = TempDir::new().unwrap();
@@ -392,46 +506,7 @@ mod tests {
             "accepted_with_errors",
             "accepted_with_errors: fsck printed errors",
         );
-        fs::write(
-            &replay_report,
-            serde_json::to_string_pretty(&serde_json::json!({
-                "schema": "erofs-rs.replay-report.v1",
-                "sidecar_path": sidecar.to_string_lossy(),
-                "artifact_path": artifact.to_string_lossy(),
-                "artifact_sha256": artifact_sha256,
-                "fsck_path": "fsck.erofs",
-                "rng_seed": 1,
-                "iteration": 1,
-                "strategy": "mutation",
-                "seed_name": "seed.erofs",
-                "original": {
-                    "classification": "accepted_with_errors",
-                    "reason": "fsck accepted the image",
-                    "exit_code": 0,
-                    "timed_out": false,
-                    "signature": "accepted_with_errors: fsck printed errors"
-                },
-                "replay": {
-                    "classification": "accepted_with_errors",
-                    "reason": "fsck accepted the image",
-                    "exit_code": 0,
-                    "signal": null,
-                    "timed_out": false,
-                    "killed_process_group": false,
-                    "rss_limit_mb": null,
-                    "stdout_truncated": false,
-                    "stderr_truncated": false
-                },
-                "comparison": {
-                    "classification_match": true,
-                    "exit_code_match": true,
-                    "timeout_match": true,
-                    "replay_match": true
-                }
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+        write_replay_report_fixture(&replay_report, &sidecar, &artifact, &artifact_sha256);
 
         let args = BundleArgs {
             sidecar: sidecar.to_string_lossy().to_string(),
@@ -448,6 +523,136 @@ mod tests {
         assert_eq!(
             manifest.replay_report.as_ref().unwrap().path,
             "replay-report.json"
+        );
+    }
+
+    #[test]
+    fn bundle_manifest_rejects_replay_report_hash_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let artifact = tmp.path().join("fuzz_seed_iter1.erofs");
+        let sidecar = tmp.path().join("fuzz_seed_iter1.json");
+        let stdout = tmp.path().join("fuzz_seed_iter1.stdout.txt");
+        let stderr = tmp.path().join("fuzz_seed_iter1.stderr.txt");
+        let replay_report = tmp.path().join("replay-report.json");
+        let output = tmp.path().join("bundle.json");
+        fs::write(&artifact, b"image").unwrap();
+        fs::write(&stdout, b"stdout").unwrap();
+        fs::write(&stderr, b"stderr").unwrap();
+        let artifact_sha256 = sha256_file(&artifact).unwrap();
+        write_sidecar_fixture(
+            &sidecar,
+            &artifact,
+            &stdout,
+            &stderr,
+            &artifact_sha256,
+            "accepted_with_errors",
+            "accepted_with_errors: fsck printed errors",
+        );
+        write_replay_report_fixture(&replay_report, &sidecar, &artifact, &"0".repeat(64));
+
+        let args = BundleArgs {
+            sidecar: sidecar.to_string_lossy().to_string(),
+            artifact: None,
+            stdout: None,
+            stderr: None,
+            replay_report: Some(replay_report.to_string_lossy().to_string()),
+            oracle_report: None,
+            kernel_report: None,
+            output: output.to_string_lossy().to_string(),
+        };
+
+        let error = build_manifest(&args).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("replay_report artifact SHA-256 mismatch")
+        );
+    }
+
+    #[test]
+    fn bundle_manifest_validates_json_kernel_report_hash() {
+        let tmp = TempDir::new().unwrap();
+        let artifact = tmp.path().join("fuzz_seed_iter1.erofs");
+        let sidecar = tmp.path().join("fuzz_seed_iter1.json");
+        let stdout = tmp.path().join("fuzz_seed_iter1.stdout.txt");
+        let stderr = tmp.path().join("fuzz_seed_iter1.stderr.txt");
+        let kernel_report = tmp.path().join("kernel-replay.json");
+        let output = tmp.path().join("bundle.json");
+        fs::write(&artifact, b"image").unwrap();
+        fs::write(&stdout, b"stdout").unwrap();
+        fs::write(&stderr, b"stderr").unwrap();
+        let artifact_sha256 = sha256_file(&artifact).unwrap();
+        write_sidecar_fixture(
+            &sidecar,
+            &artifact,
+            &stdout,
+            &stderr,
+            &artifact_sha256,
+            "accepted_with_errors",
+            "accepted_with_errors: fsck printed errors",
+        );
+        write_kernel_report_fixture(&kernel_report, Some(&artifact_sha256));
+
+        let args = BundleArgs {
+            sidecar: sidecar.to_string_lossy().to_string(),
+            artifact: None,
+            stdout: None,
+            stderr: None,
+            replay_report: None,
+            oracle_report: None,
+            kernel_report: Some(kernel_report.to_string_lossy().to_string()),
+            output: output.to_string_lossy().to_string(),
+        };
+        let manifest = build_manifest(&args).unwrap();
+
+        assert_eq!(
+            manifest.kernel_report.as_ref().unwrap().path,
+            "kernel-replay.json"
+        );
+    }
+
+    #[test]
+    fn bundle_manifest_rejects_kernel_report_without_artifact_hash() {
+        let tmp = TempDir::new().unwrap();
+        let artifact = tmp.path().join("fuzz_seed_iter1.erofs");
+        let sidecar = tmp.path().join("fuzz_seed_iter1.json");
+        let stdout = tmp.path().join("fuzz_seed_iter1.stdout.txt");
+        let stderr = tmp.path().join("fuzz_seed_iter1.stderr.txt");
+        let kernel_report = tmp.path().join("kernel-replay.json");
+        let output = tmp.path().join("bundle.json");
+        fs::write(&artifact, b"image").unwrap();
+        fs::write(&stdout, b"stdout").unwrap();
+        fs::write(&stderr, b"stderr").unwrap();
+        let artifact_sha256 = sha256_file(&artifact).unwrap();
+        write_sidecar_fixture(
+            &sidecar,
+            &artifact,
+            &stdout,
+            &stderr,
+            &artifact_sha256,
+            "accepted_with_errors",
+            "accepted_with_errors: fsck printed errors",
+        );
+        write_kernel_report_fixture(&kernel_report, None);
+
+        let args = BundleArgs {
+            sidecar: sidecar.to_string_lossy().to_string(),
+            artifact: None,
+            stdout: None,
+            stderr: None,
+            replay_report: None,
+            oracle_report: None,
+            kernel_report: Some(kernel_report.to_string_lossy().to_string()),
+            output: output.to_string_lossy().to_string(),
+        };
+
+        let error = build_manifest(&args).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("kernel_report missing artifact SHA-256")
         );
     }
 
