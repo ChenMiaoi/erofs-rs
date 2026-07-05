@@ -55,6 +55,11 @@ pub enum KernelReplayReportError {
     MissingDangerousPattern,
     #[error("non-unsafe kernel replay report includes dangerous_pattern")]
     UnexpectedDangerousPattern,
+    #[error("kernel replay report signature {signature:?} does not match {outcome:?} outcome")]
+    InvalidSignaturePrefix {
+        outcome: KernelReplayOutcome,
+        signature: String,
+    },
 }
 
 pub fn build_kernel_replay_report(
@@ -100,6 +105,15 @@ pub fn validate_kernel_replay_report(
     }
     require_nonempty("message", &report.message)?;
     require_nonempty("signature", &report.signature)?;
+    if !report
+        .signature
+        .starts_with(signature_prefix(&report.outcome))
+    {
+        return Err(KernelReplayReportError::InvalidSignaturePrefix {
+            outcome: report.outcome.clone(),
+            signature: report.signature.clone(),
+        });
+    }
     match (&report.outcome, &report.dangerous_pattern) {
         (KernelReplayOutcome::Unsafe, Some(pattern)) => {
             require_nonempty("dangerous_pattern", pattern)?;
@@ -113,6 +127,16 @@ pub fn validate_kernel_replay_report(
         (_, None) => {}
     }
     Ok(())
+}
+
+fn signature_prefix(outcome: &KernelReplayOutcome) -> &'static str {
+    match outcome {
+        KernelReplayOutcome::Accepted => "kernel_accepted:",
+        KernelReplayOutcome::Rejected => "kernel_rejected:",
+        KernelReplayOutcome::Unsafe => "kernel_unsafe:",
+        KernelReplayOutcome::Timeout => "kernel_timeout:",
+        KernelReplayOutcome::Unknown => "kernel_unknown:",
+    }
 }
 
 fn require_nonempty(
@@ -460,6 +484,24 @@ mod tests {
             error,
             KernelReplayReportError::InvalidSha256 {
                 field: "artifact_sha256",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn kernel_replay_report_parser_rejects_mismatched_signature_prefix() {
+        let report = VALID_REPORT.replace(
+            r#""signature": "kernel_rejected: failed to verify superblock checksum""#,
+            r#""signature": "kernel_unsafe: failed to verify superblock checksum""#,
+        );
+
+        let error = parse_kernel_replay_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            KernelReplayReportError::InvalidSignaturePrefix {
+                outcome: KernelReplayOutcome::Rejected,
                 ..
             }
         ));

@@ -463,7 +463,9 @@ dangerous kernel diagnostics as unsafe results before considering clean
 rejection or successful traversal markers. Passing `--artifact` records the
 image SHA-256 in the report, and `--artifact-sha256` makes the command fail if
 the replayed artifact no longer matches the expected digest. The report parser
-requires unsafe outcomes to include a dangerous pattern and rejects
+requires the `kernel_accepted:`, `kernel_rejected:`, `kernel_unsafe:`,
+`kernel_timeout:`, or `kernel_unknown:` signature prefix to match the outcome.
+It also requires unsafe outcomes to include a dangerous pattern and rejects
 dangerous-pattern fields on non-unsafe outcomes.
 
 ## Continuous Integration

@@ -207,8 +207,9 @@ outcome, a normalized signature, and the dangerous pattern that triggered an
 unsafe verdict. Passing `--artifact-sha256` verifies that the replayed artifact
 matches the expected digest before writing the report. The Rust library parser
 rejects unknown schemas, malformed artifact digests, empty required fields, and
-unsafe reports that omit the dangerous pattern. Non-unsafe reports must not
-carry a dangerous pattern.
+signatures whose `kernel_*:` prefix does not match the outcome. Unsafe reports
+must include the dangerous pattern. Non-unsafe reports must not carry a
+dangerous pattern.
 
 ## Finding Bundle Manifest
 
