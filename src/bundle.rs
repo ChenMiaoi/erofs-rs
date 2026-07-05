@@ -137,9 +137,14 @@ fn validate_optional_json_report(
                 &report.artifact_sha256,
             )
         }
-        OptionalReportKind::Oracle => parse_oracle_json_report(&content)
-            .map(|_| ())
-            .with_context(|| format!("failed to parse oracle_report {}", path.display())),
+        OptionalReportKind::Oracle => {
+            let report = parse_oracle_json_report(&content)
+                .with_context(|| format!("failed to parse oracle_report {}", path.display()))?;
+            let Some(report_sha256) = report.input_sha256.as_deref() else {
+                bail!("oracle_report missing input SHA-256 for {}", path.display());
+            };
+            validate_report_sha256("oracle_report", path, artifact_sha256, report_sha256)
+        }
         OptionalReportKind::Kernel => {
             let report = parse_kernel_replay_report(&content)
                 .with_context(|| format!("failed to parse kernel_report {}", path.display()))?;
@@ -429,6 +434,29 @@ mod tests {
         .unwrap();
     }
 
+    fn write_oracle_report_fixture(oracle_report: &Path, input_sha256: Option<&str>) {
+        fs::write(
+            oracle_report,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "schema": "erofs-rs.oracle-report.v1",
+                "input": "fuzz_seed_iter1.erofs",
+                "input_sha256": input_sha256,
+                "checks": [
+                    {
+                        "name": "rust_parser",
+                        "status": "accepted",
+                        "classification": "accepted",
+                        "reason": "ok"
+                    }
+                ],
+                "matrix": [],
+                "interesting_findings": 0
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn bundle_manifest_uses_sidecar_metadata_and_sibling_files() {
         let tmp = TempDir::new().unwrap();
@@ -653,6 +681,92 @@ mod tests {
             error
                 .to_string()
                 .contains("kernel_report missing artifact SHA-256")
+        );
+    }
+
+    #[test]
+    fn bundle_manifest_validates_json_oracle_report_hash() {
+        let tmp = TempDir::new().unwrap();
+        let artifact = tmp.path().join("fuzz_seed_iter1.erofs");
+        let sidecar = tmp.path().join("fuzz_seed_iter1.json");
+        let stdout = tmp.path().join("fuzz_seed_iter1.stdout.txt");
+        let stderr = tmp.path().join("fuzz_seed_iter1.stderr.txt");
+        let oracle_report = tmp.path().join("oracle-report.json");
+        let output = tmp.path().join("bundle.json");
+        fs::write(&artifact, b"image").unwrap();
+        fs::write(&stdout, b"stdout").unwrap();
+        fs::write(&stderr, b"stderr").unwrap();
+        let artifact_sha256 = sha256_file(&artifact).unwrap();
+        write_sidecar_fixture(
+            &sidecar,
+            &artifact,
+            &stdout,
+            &stderr,
+            &artifact_sha256,
+            "accepted_with_errors",
+            "accepted_with_errors: fsck printed errors",
+        );
+        write_oracle_report_fixture(&oracle_report, Some(&artifact_sha256));
+
+        let args = BundleArgs {
+            sidecar: sidecar.to_string_lossy().to_string(),
+            artifact: None,
+            stdout: None,
+            stderr: None,
+            replay_report: None,
+            oracle_report: Some(oracle_report.to_string_lossy().to_string()),
+            kernel_report: None,
+            output: output.to_string_lossy().to_string(),
+        };
+        let manifest = build_manifest(&args).unwrap();
+
+        assert_eq!(
+            manifest.oracle_report.as_ref().unwrap().path,
+            "oracle-report.json"
+        );
+    }
+
+    #[test]
+    fn bundle_manifest_rejects_oracle_report_without_input_hash() {
+        let tmp = TempDir::new().unwrap();
+        let artifact = tmp.path().join("fuzz_seed_iter1.erofs");
+        let sidecar = tmp.path().join("fuzz_seed_iter1.json");
+        let stdout = tmp.path().join("fuzz_seed_iter1.stdout.txt");
+        let stderr = tmp.path().join("fuzz_seed_iter1.stderr.txt");
+        let oracle_report = tmp.path().join("oracle-report.json");
+        let output = tmp.path().join("bundle.json");
+        fs::write(&artifact, b"image").unwrap();
+        fs::write(&stdout, b"stdout").unwrap();
+        fs::write(&stderr, b"stderr").unwrap();
+        let artifact_sha256 = sha256_file(&artifact).unwrap();
+        write_sidecar_fixture(
+            &sidecar,
+            &artifact,
+            &stdout,
+            &stderr,
+            &artifact_sha256,
+            "accepted_with_errors",
+            "accepted_with_errors: fsck printed errors",
+        );
+        write_oracle_report_fixture(&oracle_report, None);
+
+        let args = BundleArgs {
+            sidecar: sidecar.to_string_lossy().to_string(),
+            artifact: None,
+            stdout: None,
+            stderr: None,
+            replay_report: None,
+            oracle_report: Some(oracle_report.to_string_lossy().to_string()),
+            kernel_report: None,
+            output: output.to_string_lossy().to_string(),
+        };
+
+        let error = build_manifest(&args).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("oracle_report missing input SHA-256")
         );
     }
 
