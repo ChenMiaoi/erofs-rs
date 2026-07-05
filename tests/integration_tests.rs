@@ -624,6 +624,10 @@ fn test_mutate_superblock() {
         fsck: fsck_path().to_string_lossy().to_string(),
         target: "superblock".to_string(),
         fix_checksum: true,
+        exec_timeout: 30,
+        max_output_bytes: 1024 * 1024,
+        no_kill_process_group: false,
+        rss_limit_mb: None,
     };
     erofs_rs::mutate::run(&args).unwrap();
 
@@ -635,6 +639,10 @@ fn test_mutate_superblock() {
     assert!(content.contains("# Target: superblock"));
     assert!(content.contains("# Output directory: "));
     assert!(content.contains("# fsck: "));
+    assert!(content.contains("# fsck timeout seconds: 30"));
+    assert!(content.contains("# fsck max output bytes: 1048576"));
+    assert!(content.contains("# fsck kill process group: true"));
+    assert!(content.contains("# fsck rss limit MiB: none"));
     assert!(content.contains("# Families: superblock="));
     assert!(content.contains("# Parser: "));
     assert!(content.contains("# Oracle: "));
@@ -653,6 +661,10 @@ fn test_mutate_inode() {
         fsck: fsck_path().to_string_lossy().to_string(),
         target: "inode".to_string(),
         fix_checksum: true,
+        exec_timeout: 30,
+        max_output_bytes: 1024 * 1024,
+        no_kill_process_group: false,
+        rss_limit_mb: None,
     };
     erofs_rs::mutate::run(&args).unwrap();
 
@@ -672,6 +684,10 @@ fn test_mutate_dirent() {
         fsck: fsck_path().to_string_lossy().to_string(),
         target: "dirent".to_string(),
         fix_checksum: true,
+        exec_timeout: 30,
+        max_output_bytes: 1024 * 1024,
+        no_kill_process_group: false,
+        rss_limit_mb: None,
     };
     erofs_rs::mutate::run(&args).unwrap();
 
@@ -691,6 +707,10 @@ fn test_mutate_xattr() {
         fsck: fsck_path().to_string_lossy().to_string(),
         target: "xattr".to_string(),
         fix_checksum: true,
+        exec_timeout: 30,
+        max_output_bytes: 1024 * 1024,
+        no_kill_process_group: false,
+        rss_limit_mb: None,
     };
     erofs_rs::mutate::run(&args).unwrap();
 
@@ -714,6 +734,10 @@ fn test_mutate_chunk() {
         fsck: fsck_path().to_string_lossy().to_string(),
         target: "chunk".to_string(),
         fix_checksum: true,
+        exec_timeout: 30,
+        max_output_bytes: 1024 * 1024,
+        no_kill_process_group: false,
+        rss_limit_mb: None,
     };
     erofs_rs::mutate::run(&args).unwrap();
 
@@ -737,6 +761,10 @@ fn test_mutate_compression() {
         fsck: fsck_path().to_string_lossy().to_string(),
         target: "compression".to_string(),
         fix_checksum: true,
+        exec_timeout: 30,
+        max_output_bytes: 1024 * 1024,
+        no_kill_process_group: false,
+        rss_limit_mb: None,
     };
     erofs_rs::mutate::run(&args).unwrap();
 
@@ -761,6 +789,10 @@ fn test_mutate_device() {
         fsck: fsck_path().to_string_lossy().to_string(),
         target: "device".to_string(),
         fix_checksum: true,
+        exec_timeout: 30,
+        max_output_bytes: 1024 * 1024,
+        no_kill_process_group: false,
+        rss_limit_mb: None,
     };
     erofs_rs::mutate::run(&args).unwrap();
 
@@ -785,6 +817,10 @@ fn test_mutate_cross_fields() {
         fsck: fsck_path().to_string_lossy().to_string(),
         target: "cross".to_string(),
         fix_checksum: true,
+        exec_timeout: 30,
+        max_output_bytes: 1024 * 1024,
+        no_kill_process_group: false,
+        rss_limit_mb: None,
     };
     erofs_rs::mutate::run(&args).unwrap();
 

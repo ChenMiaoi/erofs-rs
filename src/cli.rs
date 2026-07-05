@@ -68,6 +68,28 @@ pub struct MutateArgs {
     pub target: String,
     #[arg(long, help = "Recalculate superblock checksum after each mutation")]
     pub fix_checksum: bool,
+    #[arg(
+        long,
+        default_value = "30",
+        help = "Per-mutant fsck timeout in seconds"
+    )]
+    pub exec_timeout: u64,
+    #[arg(
+        long,
+        default_value = "1048576",
+        help = "Maximum bytes retained from each fsck output stream"
+    )]
+    pub max_output_bytes: usize,
+    #[arg(
+        long,
+        help = "Do not kill the fsck process group when an execution times out"
+    )]
+    pub no_kill_process_group: bool,
+    #[arg(
+        long,
+        help = "Address-space limit in MiB for each fsck execution on Unix"
+    )]
+    pub rss_limit_mb: Option<u64>,
 }
 
 #[derive(Parser, Debug)]

@@ -1,7 +1,7 @@
 use crate::checksum::fix_checksum;
 use crate::cli::MutateArgs;
 use crate::dirent::locate_dirents_in_image;
-use crate::fsck::{classify_fsck_result, run_fsck};
+use crate::fsck::{ExecLimits, run_fsck_with_limits};
 use crate::image::{EROFS_SUPER_OFFSET, FieldWidth, Image, read_image, write_image};
 use crate::inode::{inode_data_offset, is_directory_inode, is_extended_inode, locate_inodes};
 use crate::parse::{ParseMode, parse_image};
@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::time::Duration;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const EROFS_FEATURE_INCOMPAT_48BIT: u32 = 0x00000080;
@@ -597,6 +598,20 @@ fn parser_outcome(image: &Image) -> String {
     }
 }
 
+fn fsck_limits(args: &MutateArgs) -> ExecLimits {
+    ExecLimits {
+        timeout: Duration::from_secs(args.exec_timeout),
+        max_output_bytes: args.max_output_bytes,
+        kill_process_group: !args.no_kill_process_group,
+        rss_limit_mb: args.rss_limit_mb,
+    }
+}
+
+fn classify_mutated_image(args: &MutateArgs, output_path: &Path) -> Result<(String, String)> {
+    let result = run_fsck_with_limits(&args.fsck, output_path, &[], fsck_limits(args))?;
+    Ok((result.classification, result.reason))
+}
+
 fn add_cross_field_mutation(
     entries: &mut Vec<MutatedEntry>,
     image: &Image,
@@ -618,9 +633,7 @@ fn add_cross_field_mutation(
     let output_path = Path::new(&args.output_dir).join(&mutation.output_name);
     write_image(&output_path, &mutated)?;
 
-    let result = run_fsck(&args.fsck, &output_path, &[])?;
-    let (classification, reason) =
-        classify_fsck_result(result.exit_code, &result.stderr, &result.stdout);
+    let (classification, reason) = classify_mutated_image(args, &output_path)?;
     let parser_outcome = parser_outcome(&mutated);
 
     entries.push(MutatedEntry {
@@ -676,9 +689,7 @@ fn add_chunk_mutation(
     let output_path = Path::new(&args.output_dir).join(&mutation.output_name);
     write_image(&output_path, &mutated)?;
 
-    let result = run_fsck(&args.fsck, &output_path, &[])?;
-    let (classification, reason) =
-        classify_fsck_result(result.exit_code, &result.stderr, &result.stdout);
+    let (classification, reason) = classify_mutated_image(args, &output_path)?;
     let parser_outcome = parser_outcome(&mutated);
 
     entries.push(MutatedEntry {
@@ -734,9 +745,7 @@ fn add_xattr_mutation(
     let output_path = Path::new(&args.output_dir).join(&mutation.output_name);
     write_image(&output_path, &mutated)?;
 
-    let result = run_fsck(&args.fsck, &output_path, &[])?;
-    let (classification, reason) =
-        classify_fsck_result(result.exit_code, &result.stderr, &result.stdout);
+    let (classification, reason) = classify_mutated_image(args, &output_path)?;
     let parser_outcome = parser_outcome(&mutated);
 
     entries.push(MutatedEntry {
@@ -792,9 +801,7 @@ fn add_compression_mutation(
     let output_path = Path::new(&args.output_dir).join(&mutation.output_name);
     write_image(&output_path, &mutated)?;
 
-    let result = run_fsck(&args.fsck, &output_path, &[])?;
-    let (classification, reason) =
-        classify_fsck_result(result.exit_code, &result.stderr, &result.stdout);
+    let (classification, reason) = classify_mutated_image(args, &output_path)?;
     let parser_outcome = parser_outcome(&mutated);
 
     entries.push(MutatedEntry {
@@ -850,9 +857,7 @@ fn add_device_mutation(
     let output_path = Path::new(&args.output_dir).join(&mutation.output_name);
     write_image(&output_path, &mutated)?;
 
-    let result = run_fsck(&args.fsck, &output_path, &[])?;
-    let (classification, reason) =
-        classify_fsck_result(result.exit_code, &result.stderr, &result.stdout);
+    let (classification, reason) = classify_mutated_image(args, &output_path)?;
     let parser_outcome = parser_outcome(&mutated);
 
     entries.push(MutatedEntry {
@@ -903,9 +908,7 @@ fn mutate_superblock(image: &Image, args: &MutateArgs) -> Result<Vec<MutatedEntr
             let output_path = Path::new(&args.output_dir).join(&output_name);
             write_image(&output_path, &mutated)?;
 
-            let result = run_fsck(&args.fsck, &output_path, &[])?;
-            let (classification, reason) =
-                classify_fsck_result(result.exit_code, &result.stderr, &result.stdout);
+            let (classification, reason) = classify_mutated_image(args, &output_path)?;
             let parser_outcome = parser_outcome(&mutated);
 
             entries.push(MutatedEntry {
@@ -970,9 +973,7 @@ fn mutate_inodes(image: &Image, args: &MutateArgs) -> Result<Vec<MutatedEntry>> 
                 let output_path = Path::new(&args.output_dir).join(&output_name);
                 write_image(&output_path, &mutated)?;
 
-                let result = run_fsck(&args.fsck, &output_path, &[])?;
-                let (classification, reason) =
-                    classify_fsck_result(result.exit_code, &result.stderr, &result.stdout);
+                let (classification, reason) = classify_mutated_image(args, &output_path)?;
                 let parser_outcome = parser_outcome(&mutated);
 
                 entries.push(MutatedEntry {
@@ -1041,9 +1042,7 @@ fn mutate_dirents(image: &Image, args: &MutateArgs) -> Result<Vec<MutatedEntry>>
                 let output_path = Path::new(&args.output_dir).join(&output_name);
                 write_image(&output_path, &mutated)?;
 
-                let result = run_fsck(&args.fsck, &output_path, &[])?;
-                let (classification, reason) =
-                    classify_fsck_result(result.exit_code, &result.stderr, &result.stdout);
+                let (classification, reason) = classify_mutated_image(args, &output_path)?;
                 let parser_outcome = parser_outcome(&mutated);
 
                 entries.push(MutatedEntry {
@@ -2055,6 +2054,15 @@ fn write_manifest<P: AsRef<Path>>(
         format!("# Target: {}", args.target),
         format!("# Output directory: {}", args.output_dir),
         format!("# fsck: {}", args.fsck),
+        format!("# fsck timeout seconds: {}", args.exec_timeout),
+        format!("# fsck max output bytes: {}", args.max_output_bytes),
+        format!("# fsck kill process group: {}", !args.no_kill_process_group),
+        format!(
+            "# fsck rss limit MiB: {}",
+            args.rss_limit_mb
+                .map(|limit| limit.to_string())
+                .unwrap_or_else(|| "none".to_string())
+        ),
         format!("# Fix checksum: {}", args.fix_checksum),
         format!("# Total mutations: {}", entries.len()),
         String::new(),
