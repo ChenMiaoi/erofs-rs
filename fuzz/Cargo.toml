@@ -82,3 +82,10 @@ path = "fuzz_targets/parser_differential.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "kernel_dmesg_classify"
+path = "fuzz_targets/kernel_dmesg_classify.rs"
+test = false
+doc = false
+bench = false
