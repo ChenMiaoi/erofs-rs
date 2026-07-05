@@ -4,7 +4,12 @@
 
 # Project-generated build and replay artifacts
 /build/
-/corpus/
+/corpus/*
+!/corpus/crashes/
+/corpus/crashes/*
+!/corpus/crashes/kernel-candidates/
+/corpus/crashes/kernel-candidates/*
+!/corpus/crashes/kernel-candidates/README.md
 
 # Local test dependency built from vendor/erofs-utils
 /tests/fixtures/fsck.erofs
