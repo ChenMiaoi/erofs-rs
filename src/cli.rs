@@ -63,7 +63,7 @@ pub struct MutateArgs {
     #[arg(
         long,
         default_value = "all",
-        help = "Mutation target: superblock, inode, dirent, xattr, chunk, cross, all"
+        help = "Mutation target: superblock, inode, dirent, xattr, chunk, compression, cross, all"
     )]
     pub target: String,
     #[arg(long, help = "Recalculate superblock checksum after each mutation")]

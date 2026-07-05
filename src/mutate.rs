@@ -11,9 +11,16 @@ use std::fs;
 use std::path::Path;
 
 const EROFS_FEATURE_INCOMPAT_48BIT: u32 = 0x00000080;
+const EROFS_INODE_COMPRESSED_FULL: u64 = 1;
+const EROFS_INODE_COMPRESSED_COMPACT: u64 = 3;
 const EROFS_INODE_CHUNK_BASED: u64 = 4;
 const EROFS_CHUNK_FORMAT_INDEXES: u64 = 0x0020;
 const EROFS_CHUNK_FORMAT_UNSUPPORTED_BIT: u64 = 0x0080;
+const Z_EROFS_ADVISE_BIG_PCLUSTER_1: u64 = 0x0002;
+const Z_EROFS_ADVISE_UNSUPPORTED_BIT: u64 = 0x8000;
+const Z_EROFS_CLUSTERBITS_RESERVED_BIT: u64 = 0x10;
+const Z_EROFS_FRAGMENT_INODE_MASK: u64 = 1 << 63;
+const Z_EROFS_MAP_HEADER_SIZE: usize = 8;
 
 /// A single field mutation definition.
 struct MutationDef {
@@ -528,11 +535,31 @@ struct ChunkMutation {
     writes: Vec<FieldWrite>,
 }
 
+struct CompressionMutation {
+    output_name: String,
+    target_desc: String,
+    field_name: &'static str,
+    mutation_name: &'static str,
+    value_width: FieldWidth,
+    value: u64,
+    writes: Vec<FieldWrite>,
+}
+
 fn seed_name(input: &str) -> String {
     Path::new(input)
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "seed".to_string())
+}
+
+fn round_up_for_mutation(value: usize, align: usize) -> Result<usize> {
+    if align == 0 || !align.is_power_of_two() {
+        bail!("invalid alignment {align}");
+    }
+    value
+        .checked_add(align - 1)
+        .map(|value| value & !(align - 1))
+        .ok_or_else(|| anyhow::anyhow!("round_up({value}, {align}) overflows"))
 }
 
 fn parser_outcome(image: &Image) -> String {
@@ -695,6 +722,64 @@ fn add_xattr_mutation(
     entries.push(MutatedEntry {
         output_name: mutation.output_name,
         family: "xattr".to_string(),
+        target_desc: mutation.target_desc,
+        field_name: mutation.field_name.to_string(),
+        mutation_name: mutation.mutation_name.to_string(),
+        value_hex: format!(
+            "0x{:0width$X}",
+            mutation.value,
+            width = mutation.value_width.bytes() * 2
+        ),
+        parser_outcome,
+        classification: classification.to_string(),
+        reason: reason.to_string(),
+    });
+
+    println!(
+        "[{classification:>20}] {:>15}.{:<25} -> {reason}",
+        mutation.field_name, mutation.mutation_name
+    );
+
+    Ok(true)
+}
+
+fn add_compression_mutation(
+    entries: &mut Vec<MutatedEntry>,
+    image: &Image,
+    args: &MutateArgs,
+    mutation: CompressionMutation,
+) -> Result<bool> {
+    let mut changed = false;
+    for write in &mutation.writes {
+        if image.read_field(write.abs_offset, write.width)? != write.value {
+            changed = true;
+            break;
+        }
+    }
+    if !changed {
+        return Ok(false);
+    }
+
+    let mut mutated = image.clone();
+    for write in &mutation.writes {
+        mutated.write_field(write.abs_offset, write.width, write.value)?;
+    }
+
+    if args.fix_checksum {
+        fix_checksum(&mut mutated)?;
+    }
+
+    let output_path = Path::new(&args.output_dir).join(&mutation.output_name);
+    write_image(&output_path, &mutated)?;
+
+    let result = run_fsck(&args.fsck, &output_path, &[])?;
+    let (classification, reason) =
+        classify_fsck_result(result.exit_code, &result.stderr, &result.stdout);
+    let parser_outcome = parser_outcome(&mutated);
+
+    entries.push(MutatedEntry {
+        output_name: mutation.output_name,
+        family: "compression".to_string(),
         target_desc: mutation.target_desc,
         field_name: mutation.field_name.to_string(),
         mutation_name: mutation.mutation_name.to_string(),
@@ -1060,6 +1145,235 @@ fn mutate_chunks(image: &Image, args: &MutateArgs) -> Result<Vec<MutatedEntry>> 
 
     if entries.is_empty() {
         println!("WARNING: No chunk mutations generated. Skipping.");
+    }
+
+    Ok(entries)
+}
+
+fn mutate_compressions(image: &Image, args: &MutateArgs) -> Result<Vec<MutatedEntry>> {
+    let seed = seed_name(&args.input);
+    let sb = image.superblock()?;
+    let inodes = locate_inodes(image, &sb)?;
+    let mut entries = Vec::new();
+
+    println!("Found {} inodes for compression mutations", inodes.len());
+
+    for inode in &inodes {
+        let inode_size = if is_extended_inode(image, inode.offset)? {
+            64usize
+        } else {
+            32usize
+        };
+        let map_end = inode
+            .offset
+            .checked_add(inode_size)
+            .ok_or_else(|| anyhow::anyhow!("compression map header offset overflows"))?;
+        let map_offset = round_up_for_mutation(map_end, 8)?;
+        if map_offset
+            .checked_add(Z_EROFS_MAP_HEADER_SIZE)
+            .is_none_or(|end| end > image.len())
+        {
+            continue;
+        }
+
+        let i_xattr_offset = inode
+            .offset
+            .checked_add(0x02)
+            .ok_or_else(|| anyhow::anyhow!("inode xattr count offset overflows"))?;
+        let advise_offset = map_offset
+            .checked_add(0x04)
+            .ok_or_else(|| anyhow::anyhow!("compression advise offset overflows"))?;
+        let algorithm_offset = map_offset
+            .checked_add(0x06)
+            .ok_or_else(|| anyhow::anyhow!("compression algorithm offset overflows"))?;
+        let clusterbits_offset = map_offset
+            .checked_add(0x07)
+            .ok_or_else(|| anyhow::anyhow!("compression clusterbits offset overflows"))?;
+
+        let original_format = image.read_field(inode.offset, FieldWidth::U16)?;
+        let compact_layout = (original_format & 0x01) | (EROFS_INODE_COMPRESSED_COMPACT << 1);
+        let full_layout = (original_format & 0x01) | (EROFS_INODE_COMPRESSED_FULL << 1);
+
+        let compression_prefix = |layout| {
+            vec![
+                FieldWrite {
+                    abs_offset: inode.offset,
+                    width: FieldWidth::U16,
+                    value: layout,
+                },
+                FieldWrite {
+                    abs_offset: i_xattr_offset,
+                    width: FieldWidth::U16,
+                    value: 0,
+                },
+                FieldWrite {
+                    abs_offset: map_offset,
+                    width: FieldWidth::U64,
+                    value: 0,
+                },
+            ]
+        };
+
+        let _ = add_compression_mutation(
+            &mut entries,
+            image,
+            args,
+            CompressionMutation {
+                output_name: format!("{seed}_nid{}_compression_full_layout.erofs", inode.nid),
+                target_desc: inode.desc.clone(),
+                field_name: "i_format",
+                mutation_name: "set_compressed_full",
+                value_width: FieldWidth::U16,
+                value: full_layout,
+                writes: compression_prefix(full_layout),
+            },
+        )?;
+
+        let _ = add_compression_mutation(
+            &mut entries,
+            image,
+            args,
+            CompressionMutation {
+                output_name: format!("{seed}_nid{}_compression_compact_layout.erofs", inode.nid),
+                target_desc: inode.desc.clone(),
+                field_name: "i_format",
+                mutation_name: "set_compressed_compact",
+                value_width: FieldWidth::U16,
+                value: compact_layout,
+                writes: compression_prefix(compact_layout),
+            },
+        )?;
+
+        let mut advise_writes = compression_prefix(compact_layout);
+        advise_writes.push(FieldWrite {
+            abs_offset: advise_offset,
+            width: FieldWidth::U16,
+            value: Z_EROFS_ADVISE_UNSUPPORTED_BIT,
+        });
+        let _ = add_compression_mutation(
+            &mut entries,
+            image,
+            args,
+            CompressionMutation {
+                output_name: format!(
+                    "{seed}_nid{}_compression_unsupported_advise.erofs",
+                    inode.nid
+                ),
+                target_desc: inode.desc.clone(),
+                field_name: "h_advise",
+                mutation_name: "unsupported_bits",
+                value_width: FieldWidth::U16,
+                value: Z_EROFS_ADVISE_UNSUPPORTED_BIT,
+                writes: advise_writes,
+            },
+        )?;
+
+        let mut algorithm_writes = compression_prefix(compact_layout);
+        algorithm_writes.push(FieldWrite {
+            abs_offset: algorithm_offset,
+            width: FieldWidth::U8,
+            value: 0x44,
+        });
+        let _ = add_compression_mutation(
+            &mut entries,
+            image,
+            args,
+            CompressionMutation {
+                output_name: format!(
+                    "{seed}_nid{}_compression_invalid_algorithm.erofs",
+                    inode.nid
+                ),
+                target_desc: inode.desc.clone(),
+                field_name: "h_algorithmtype",
+                mutation_name: "invalid_algorithms",
+                value_width: FieldWidth::U8,
+                value: 0x44,
+                writes: algorithm_writes,
+            },
+        )?;
+
+        let mut clusterbits_writes = compression_prefix(compact_layout);
+        clusterbits_writes.push(FieldWrite {
+            abs_offset: clusterbits_offset,
+            width: FieldWidth::U8,
+            value: Z_EROFS_CLUSTERBITS_RESERVED_BIT,
+        });
+        let _ = add_compression_mutation(
+            &mut entries,
+            image,
+            args,
+            CompressionMutation {
+                output_name: format!(
+                    "{seed}_nid{}_compression_reserved_clusterbits.erofs",
+                    inode.nid
+                ),
+                target_desc: inode.desc.clone(),
+                field_name: "h_clusterbits",
+                mutation_name: "reserved_bits",
+                value_width: FieldWidth::U8,
+                value: Z_EROFS_CLUSTERBITS_RESERVED_BIT,
+                writes: clusterbits_writes,
+            },
+        )?;
+
+        let mut big_pcluster_writes = compression_prefix(compact_layout);
+        big_pcluster_writes.push(FieldWrite {
+            abs_offset: advise_offset,
+            width: FieldWidth::U16,
+            value: Z_EROFS_ADVISE_BIG_PCLUSTER_1,
+        });
+        let _ = add_compression_mutation(
+            &mut entries,
+            image,
+            args,
+            CompressionMutation {
+                output_name: format!(
+                    "{seed}_nid{}_compression_big_pcluster_mismatch.erofs",
+                    inode.nid
+                ),
+                target_desc: inode.desc.clone(),
+                field_name: "h_advise",
+                mutation_name: "big_pcluster_mismatch",
+                value_width: FieldWidth::U16,
+                value: Z_EROFS_ADVISE_BIG_PCLUSTER_1,
+                writes: big_pcluster_writes,
+            },
+        )?;
+
+        let _ = add_compression_mutation(
+            &mut entries,
+            image,
+            args,
+            CompressionMutation {
+                output_name: format!("{seed}_nid{}_compression_packed_fragment.erofs", inode.nid),
+                target_desc: inode.desc.clone(),
+                field_name: "z_fragmentoff",
+                mutation_name: "packed_whole_file",
+                value_width: FieldWidth::U64,
+                value: Z_EROFS_FRAGMENT_INODE_MASK,
+                writes: vec![
+                    FieldWrite {
+                        abs_offset: inode.offset,
+                        width: FieldWidth::U16,
+                        value: compact_layout,
+                    },
+                    FieldWrite {
+                        abs_offset: i_xattr_offset,
+                        width: FieldWidth::U16,
+                        value: 0,
+                    },
+                    FieldWrite {
+                        abs_offset: map_offset,
+                        width: FieldWidth::U64,
+                        value: Z_EROFS_FRAGMENT_INODE_MASK,
+                    },
+                ],
+            },
+        )?;
+    }
+
+    if entries.is_empty() {
+        println!("WARNING: No compression mutations generated. Skipping.");
     }
 
     Ok(entries)
@@ -1498,6 +1812,7 @@ pub fn run(args: &MutateArgs) -> Result<()> {
         "dirent" => all_entries.extend(mutate_dirents(&image, args)?),
         "xattr" => all_entries.extend(mutate_xattrs(&image, args)?),
         "chunk" => all_entries.extend(mutate_chunks(&image, args)?),
+        "compression" => all_entries.extend(mutate_compressions(&image, args)?),
         "cross" => all_entries.extend(mutate_cross_fields(&image, args)?),
         "all" => {
             all_entries.extend(mutate_superblock(&image, args)?);
@@ -1505,10 +1820,11 @@ pub fn run(args: &MutateArgs) -> Result<()> {
             all_entries.extend(mutate_dirents(&image, args)?);
             all_entries.extend(mutate_xattrs(&image, args)?);
             all_entries.extend(mutate_chunks(&image, args)?);
+            all_entries.extend(mutate_compressions(&image, args)?);
             all_entries.extend(mutate_cross_fields(&image, args)?);
         }
         _ => bail!(
-            "unknown mutation target: {} (expected superblock|inode|dirent|xattr|chunk|cross|all)",
+            "unknown mutation target: {} (expected superblock|inode|dirent|xattr|chunk|compression|cross|all)",
             args.target
         ),
     }

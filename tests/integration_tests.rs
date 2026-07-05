@@ -660,6 +660,30 @@ fn test_mutate_chunk() {
 }
 
 #[test]
+fn test_mutate_compression() {
+    let tmp = TempDir::new().unwrap();
+    let out_dir = tmp.path().join("compression");
+    let manifest = tmp.path().join("manifest.txt");
+
+    let args = erofs_rs::cli::MutateArgs {
+        input: fixture("single.erofs").to_string_lossy().to_string(),
+        output_dir: out_dir.to_string_lossy().to_string(),
+        manifest: manifest.to_string_lossy().to_string(),
+        fsck: fsck_path().to_string_lossy().to_string(),
+        target: "compression".to_string(),
+        fix_checksum: true,
+    };
+    erofs_rs::mutate::run(&args).unwrap();
+
+    assert!(manifest.exists());
+    assert!(fs::read_dir(&out_dir).unwrap().count() > 0);
+    let content = fs::read_to_string(&manifest).unwrap();
+    assert!(content.contains("# Families: compression="));
+    assert!(content.contains("reserved_bits"));
+    assert!(content.contains("big_pcluster_mismatch"));
+}
+
+#[test]
 fn test_mutate_cross_fields() {
     let tmp = TempDir::new().unwrap();
     let out_dir = tmp.path().join("cross");
