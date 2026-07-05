@@ -20,6 +20,7 @@ pub mod oracle;
 pub mod parse;
 pub mod replay;
 pub mod seed_manifest;
+pub mod triage;
 pub(crate) mod tui;
 
 pub use checksum::{crc32c, fix_checksum};

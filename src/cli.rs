@@ -20,6 +20,8 @@ pub enum Commands {
     Fuzz(FuzzArgs),
     /// Replay a fuzz artifact from its JSON sidecar.
     Replay(ReplayArgs),
+    /// Merge fuzz campaign triage reports.
+    Triage(TriageArgs),
     /// Run userspace oracle checks over one image.
     Oracle(OracleArgs),
     /// Print superblock, inode, and dirent information.
@@ -211,6 +213,18 @@ pub struct ReplayArgs {
         help = "Address-space limit in MiB for each tool execution on Unix"
     )]
     pub rss_limit_mb: Option<u64>,
+}
+
+#[derive(Parser, Debug)]
+pub struct TriageArgs {
+    #[arg(
+        long = "bucket-report",
+        required = true,
+        help = "Input fuzz-buckets JSON report; repeat to merge campaigns"
+    )]
+    pub bucket_reports: Vec<String>,
+    #[arg(long, help = "Output cross-campaign bucket database JSON")]
+    pub output: String,
 }
 
 #[derive(Parser, Debug)]

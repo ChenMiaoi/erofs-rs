@@ -204,6 +204,22 @@ rejections such as checksum, invalid, corruption, and read errors are reported
 separately from interesting or unsafe findings. Use `--no-tui` for plain
 script-friendly output.
 
+### `triage` – cross-campaign bucket database
+
+```bash
+erofs-rs triage \
+    --bucket-report /tmp/fuzz-run-a/fuzz-buckets.json \
+    --bucket-report /tmp/fuzz-run-b/fuzz-buckets.json \
+    --output /tmp/fuzz-bucket-db.json
+```
+
+`triage` merges one or more `fuzz-buckets.json` reports into a stable
+`erofs-rs.bucket-db.v1` JSON database. The database records source reports,
+total counts per signature, campaign counts, classifications, outcome kinds,
+and representative examples from each campaign. Inputs with unknown schemas,
+duplicate signatures within one report, zero counts, or conflicting
+classification/outcome metadata are rejected instead of merged silently.
+
 ### `replay` – sidecar-based reproduction
 
 ```bash
