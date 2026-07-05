@@ -16,6 +16,7 @@ pub mod inode;
 pub mod mutate;
 pub mod oracle;
 pub mod parse;
+pub mod replay;
 pub mod seed_manifest;
 pub(crate) mod tui;
 

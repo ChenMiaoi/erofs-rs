@@ -200,6 +200,23 @@ rejections such as checksum, invalid, corruption, and read errors are reported
 separately from interesting or unsafe findings. Use `--no-tui` for plain
 script-friendly output.
 
+### `replay` – sidecar-based reproduction
+
+```bash
+erofs-rs replay \
+    --sidecar /tmp/fuzz-artifacts/fuzz_single_iter42.json \
+    --fsck build/erofs-utils/fsck/fsck.erofs \
+    --report /tmp/replay-report.txt
+```
+
+`replay` consumes a `fuzz` JSON sidecar, locates the artifact image recorded in
+the sidecar, verifies the image SHA-256, reruns `fsck.erofs`, and reports
+whether the replayed classification, exit code, and timeout state match the
+original sidecar metadata. If the original artifact path is stale, `replay`
+also checks for an artifact with the same file name next to the sidecar, which
+keeps finding bundles portable across machines. Use `--artifact` or `--fsck` to
+override the sidecar paths during local triage.
+
 ### Coverage-guided fuzz targets
 
 The `fuzz/` package contains Rust-native libFuzzer targets for the library

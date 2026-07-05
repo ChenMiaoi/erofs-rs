@@ -18,6 +18,8 @@ pub enum Commands {
     Corpus(CorpusArgs),
     /// Run a mutation-based fuzzing campaign.
     Fuzz(FuzzArgs),
+    /// Replay a fuzz artifact from its JSON sidecar.
+    Replay(ReplayArgs),
     /// Run userspace oracle checks over one image.
     Oracle(OracleArgs),
     /// Print superblock, inode, and dirent information.
@@ -177,6 +179,36 @@ pub struct FuzzArgs {
     #[arg(
         long,
         help = "Address-space limit in MiB for each fsck execution on Unix"
+    )]
+    pub rss_limit_mb: Option<u64>,
+}
+
+#[derive(Parser, Debug)]
+pub struct ReplayArgs {
+    #[arg(long, help = "Fuzz artifact JSON sidecar")]
+    pub sidecar: String,
+    #[arg(long, help = "Override artifact image path from the sidecar")]
+    pub artifact: Option<String>,
+    #[arg(long, help = "Override fsck.erofs path from the sidecar command")]
+    pub fsck: Option<String>,
+    #[arg(long, help = "Optional replay report output file")]
+    pub report: Option<String>,
+    #[arg(long, default_value = "30", help = "Per-tool timeout in seconds")]
+    pub exec_timeout: u64,
+    #[arg(
+        long,
+        default_value = "1048576",
+        help = "Maximum bytes retained from each tool output stream"
+    )]
+    pub max_output_bytes: usize,
+    #[arg(
+        long,
+        help = "Do not kill the tool process group when an execution times out"
+    )]
+    pub no_kill_process_group: bool,
+    #[arg(
+        long,
+        help = "Address-space limit in MiB for each tool execution on Unix"
     )]
     pub rss_limit_mb: Option<u64>,
 }

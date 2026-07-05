@@ -6,8 +6,9 @@ use erofs_rs::{
     inode::locate_inodes,
     parse::{ParseMode, ParseStage, parse_image},
 };
+use sha2::{Digest, Sha256};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tempfile::TempDir;
 
@@ -20,6 +21,13 @@ fn fixture(name: &str) -> PathBuf {
 
 fn fsck_path() -> PathBuf {
     fixture("fsck.erofs")
+}
+
+fn file_sha256(path: &Path) -> String {
+    let data = fs::read(path).unwrap();
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hex::encode(hasher.finalize())
 }
 
 #[test]
@@ -1043,4 +1051,57 @@ fn test_oracle_report_with_dump_check() {
                 && entry["verdict"] == "agree"
                 && entry["disagrees"] == false)
     );
+}
+
+#[test]
+fn test_replay_sidecar_reruns_fsck() {
+    let tmp = TempDir::new().unwrap();
+    let artifact = tmp.path().join("fuzz_seed_iter1.erofs");
+    let sidecar = tmp.path().join("fuzz_seed_iter1.json");
+    let report = tmp.path().join("replay-report.txt");
+    fs::copy(fixture("single.erofs"), &artifact).unwrap();
+    let sha256 = file_sha256(&artifact);
+    let sidecar_json = serde_json::json!({
+        "schema": "erofs-rs.fuzz-artifact.v1",
+        "rng_seed": 123,
+        "iteration": 1,
+        "strategy": "mutation",
+        "seed_name": "single.erofs",
+        "artifact_sha256": sha256,
+        "artifact_path": "/stale/path/fuzz_seed_iter1.erofs",
+        "commands": {
+            "fsck": ["/bin/true", "/stale/path/fuzz_seed_iter1.erofs"]
+        },
+        "fsck_exit_code": 0,
+        "fsck_timed_out": false,
+        "fsck_kill_process_group": true,
+        "fsck_rss_limit_mb": null,
+        "classification": "accepted",
+        "reason": "fsck accepted the image",
+        "signature": "accepted: fsck accepted the image"
+    });
+    fs::write(
+        &sidecar,
+        serde_json::to_string_pretty(&sidecar_json).unwrap(),
+    )
+    .unwrap();
+
+    let args = erofs_rs::cli::ReplayArgs {
+        sidecar: sidecar.to_string_lossy().to_string(),
+        artifact: None,
+        fsck: Some("/bin/true".to_string()),
+        report: Some(report.to_string_lossy().to_string()),
+        exec_timeout: 1,
+        max_output_bytes: 1024,
+        no_kill_process_group: false,
+        rss_limit_mb: None,
+    };
+    erofs_rs::replay::run(&args).unwrap();
+
+    let content = fs::read_to_string(&report).unwrap();
+    assert!(content.contains("# EROFS Fuzz Artifact Replay Report"));
+    assert!(content.contains("classification_match: true"));
+    assert!(content.contains("exit_code_match: true"));
+    assert!(content.contains("timeout_match: true"));
+    assert!(content.contains("replay_match: true"));
 }
