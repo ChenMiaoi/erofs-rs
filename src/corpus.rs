@@ -389,6 +389,8 @@ pub enum CminSummaryError {
         before: usize,
         after: usize,
     },
+    #[error("cmin summary contains duplicate target: {0}")]
+    DuplicateTarget(String),
 }
 
 pub fn parse_cmin_summary_report(
@@ -416,8 +418,12 @@ pub fn validate_cmin_summary_report(
         return Err(CminSummaryError::EmptyList("targets"));
     }
 
+    let mut target_names = HashSet::new();
     for target in &report.targets {
         validate_cmin_target(target)?;
+        if !target_names.insert(target.target.as_str()) {
+            return Err(CminSummaryError::DuplicateTarget(target.target.clone()));
+        }
     }
 
     Ok(())
@@ -1404,6 +1410,21 @@ mod tests {
                 before: 3,
                 after: 4,
             } if target == "superblock_parse"
+        ));
+    }
+
+    #[test]
+    fn cmin_summary_report_rejects_duplicate_target() {
+        let mut report: serde_json::Value = serde_json::from_str(VALID_CMIN_SUMMARY).unwrap();
+        let target = report["targets"][0].clone();
+        report["targets"].as_array_mut().unwrap().push(target);
+        let report = serde_json::to_string(&report).unwrap();
+
+        let error = parse_cmin_summary_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            CminSummaryError::DuplicateTarget(target) if target == "superblock_parse"
         ));
     }
 }

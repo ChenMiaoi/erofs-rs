@@ -106,7 +106,8 @@ flags, and one entry per target with:
 Use this report with `coverage-manifest.json` to review whether a minimized
 unit should be imported into `corpus/seeds/minimized/<target>/`. The Rust
 library parser rejects unknown schemas, empty required fields or flag lists,
-and summaries where a target has more corpus units after `cmin` than before.
+duplicate targets, and summaries where a target has more corpus units after
+`cmin` than before.
 
 ## Fuzz Campaign Artifacts
 
