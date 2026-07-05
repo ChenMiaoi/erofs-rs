@@ -102,6 +102,12 @@ pub enum CorpusMode {
 pub enum FuzzStrategy {
     /// Random mutation of seed EROFS images.
     Mutation,
+    /// Reserved for future structure-preserving image mutation.
+    Structured,
+    /// Reserved for cargo-fuzz/libFuzzer orchestration.
+    Libfuzzer,
+    /// Reserved for replaying existing fuzzing artifacts.
+    Replay,
 }
 
 #[derive(Parser, Debug)]

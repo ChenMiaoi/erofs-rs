@@ -443,6 +443,9 @@ fn save_artifact(
 fn strategy_name(strategy: FuzzStrategy) -> &'static str {
     match strategy {
         FuzzStrategy::Mutation => "mutation",
+        FuzzStrategy::Structured => "structured",
+        FuzzStrategy::Libfuzzer => "libfuzzer",
+        FuzzStrategy::Replay => "replay",
     }
 }
 
@@ -643,6 +646,10 @@ fn should_show_tui(args: &FuzzArgs) -> bool {
 pub fn run(args: &FuzzArgs) -> Result<()> {
     match args.strategy {
         FuzzStrategy::Mutation => run_mutation_fuzz(args),
+        strategy => bail!(
+            "fuzz strategy '{}' is not implemented yet; use '--strategy mutation'",
+            strategy_name(strategy)
+        ),
     }
 }
 
@@ -775,9 +782,11 @@ fn run_mutation_fuzz(args: &FuzzArgs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::run as run_fuzz;
     use super::{
         DEFAULT_DUMP_PATH, FUZZ_ARTIFACT_SCHEMA, FuzzArtifactSidecar, FuzzRun, FuzzSidecarInput,
         FuzzSummary, OutcomeKind, build_fuzz_sidecar, git_revision, mutation_record, sha256_hex,
+        strategy_name,
     };
     use crate::cli::{FuzzArgs, FuzzStrategy};
     use crate::image::{FieldWidth, Image};
@@ -877,6 +886,36 @@ mod tests {
         assert_eq!(decoded.fsck_rss_limit_mb, Some(64));
         assert!(decoded.stderr_truncated);
         assert_eq!(decoded.mutations[0].old.as_deref(), Some("0x00"));
+    }
+
+    #[test]
+    fn unsupported_strategy_reports_explicit_error() {
+        let args = FuzzArgs {
+            input_dir: "seeds".to_string(),
+            output_dir: "out".to_string(),
+            max_time: 1,
+            fsck: "fsck.erofs".to_string(),
+            seed: Some(123),
+            no_tui: true,
+            strategy: FuzzStrategy::Libfuzzer,
+            exec_timeout: 30,
+            max_output_bytes: 1024,
+            no_kill_process_group: false,
+            rss_limit_mb: None,
+        };
+
+        let err = run_fuzz(&args).unwrap_err().to_string();
+
+        assert!(err.contains("fuzz strategy 'libfuzzer' is not implemented yet"));
+        assert!(err.contains("--strategy mutation"));
+    }
+
+    #[test]
+    fn strategy_names_are_stable() {
+        assert_eq!(strategy_name(FuzzStrategy::Mutation), "mutation");
+        assert_eq!(strategy_name(FuzzStrategy::Structured), "structured");
+        assert_eq!(strategy_name(FuzzStrategy::Libfuzzer), "libfuzzer");
+        assert_eq!(strategy_name(FuzzStrategy::Replay), "replay");
     }
 
     #[test]

@@ -162,6 +162,10 @@ erofs-rs fuzz \
 If `--seed` is omitted, the generated fuzzing report records the seed that was
 used so the run can be replayed.
 
+`--strategy mutation` is the only executable CLI strategy today. The reserved
+`structured`, `libfuzzer`, and `replay` strategy names fail with an explicit
+"not implemented" error instead of silently falling back to mutation.
+
 Each unique `fuzz_*.erofs` artifact is written with a matching JSON sidecar and
 captured fsck output files. The sidecar records the tool version, RNG seed,
 iteration, strategy, seed and artifact SHA-256 digests, mutation records, fsck
