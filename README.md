@@ -217,6 +217,14 @@ also checks for an artifact with the same file name next to the sidecar, which
 keeps finding bundles portable across machines. Use `--artifact` or `--fsck` to
 override the sidecar paths during local triage.
 
+### Finding bundles
+
+Triage bundles should keep the image, fuzz sidecar, captured stdout/stderr, and
+any replay, oracle, or kernel reports together. The Rust library validates a
+`bundle.json` manifest with the stable `erofs-rs.finding-bundle.v1` schema so a
+bundle can identify the artifact SHA-256, matching sidecar, optional report
+files, classification, and signature without relying on directory names.
+
 ### Coverage-guided fuzz targets
 
 The `fuzz/` package contains Rust-native libFuzzer targets for the library

@@ -7,6 +7,7 @@ pub mod checksum;
 pub mod cli;
 pub mod corpus;
 pub mod dirent;
+pub mod finding_bundle;
 pub mod fsck;
 pub mod fuzz;
 pub mod image;

@@ -27,7 +27,7 @@ body:
     id: sidecar
     attributes:
       label: Sidecar metadata
-      description: Attach or paste the matching `fuzz_*.json` sidecar plus any `.stdout.txt` and `.stderr.txt` files.
+      description: Attach or paste the matching `fuzz_*.json` sidecar, optional `bundle.json`, plus any `.stdout.txt` and `.stderr.txt` files.
       render: json
       placeholder: |
         {
