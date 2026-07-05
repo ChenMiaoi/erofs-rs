@@ -222,8 +222,8 @@ should not be committed unless a minimized regression is intentionally added.
 The basic and complex seed scripts create a small hand-written corpus. For
 feature coverage, `generate-seed-matrix.sh` builds a reproducible matrix with
 block-size, compression, user-xattr, POSIX ACL, large-directory, special-file,
-socket, device-node, and chunked-file variants when the host tools can create
-them:
+socket, device-node, chunked-file, and packed-fragment variants when the host
+tools can create them:
 
 ```bash
 ./scripts/generate-seed-matrix.sh

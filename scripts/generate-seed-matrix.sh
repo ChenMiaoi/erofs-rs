@@ -322,6 +322,13 @@ run_mkfs "chunked-4k" "$tmp" "basic" \
     "-b4096" "--chunksize=4096"
 rm -rf "$tmp"
 
+tmp="$(mktemp -d)"
+make_basic_root "$tmp"
+run_mkfs "fragment-packed-lz4-4k" "$tmp" "basic" \
+    "block_size:4096,compression:lz4,layout:fragment,packed_inode:true" \
+    "-b4096" "-zlz4" "-Efragments"
+rm -rf "$tmp"
+
 printf '\n]\n' >> "$MANIFEST"
 
 echo ""
