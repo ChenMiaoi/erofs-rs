@@ -318,15 +318,15 @@ fn build_manifest(args: &BundleArgs) -> Result<FindingBundleManifest> {
 pub fn run(args: &BundleArgs) -> Result<()> {
     let manifest = build_manifest(args)?;
     let output_path = Path::new(&args.output);
-    if let Some(parent) = output_path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        fs::create_dir_all(parent).with_context(|| {
-            format!(
-                "failed to create bundle manifest directory {}",
-                parent.display()
-            )
-        })?;
+    if let Some(parent) = output_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "failed to create bundle manifest directory {}",
+                    parent.display()
+                )
+            })?;
+        }
     }
     let json = serde_json::to_string_pretty(&manifest)
         .context("failed to serialize finding bundle manifest")?;
