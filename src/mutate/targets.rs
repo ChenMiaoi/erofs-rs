@@ -2,8 +2,8 @@ use super::engine::{
     ChunkMutation, CompressionMutation, CrossFieldMutation, DeviceMutation, FieldWrite,
     FragmentMutation, MutatedEntry, XattrMutation, add_chunk_mutation, add_compression_mutation,
     add_cross_field_mutation, add_device_mutation, add_fragment_mutation, add_xattr_mutation,
-    classify_mutated_image, packed_fragment_writes, parser_outcome, round_up_for_mutation,
-    seed_name,
+    classify_mutated_image, mutation_metadata, packed_fragment_writes, parser_outcome,
+    round_up_for_mutation, seed_name,
 };
 use super::fields::{
     DIRENT_FIELDS, EROFS_CHUNK_FORMAT_INDEXES, EROFS_CHUNK_FORMAT_UNSUPPORTED_BIT,
@@ -48,6 +48,9 @@ pub(super) fn mutate_superblock(image: &Image, args: &MutateArgs) -> Result<Vec<
 
             let (classification, reason) = classify_mutated_image(args, &output_path)?;
             let parser_outcome = parser_outcome(&mutated);
+            let checksum_repaired = args.fix_checksum && def.field_name != "checksum";
+            let (mutation_class, checksum_policy) =
+                mutation_metadata(checksum_repaired, &parser_outcome, &classification);
 
             entries.push(MutatedEntry {
                 output_name,
@@ -56,6 +59,8 @@ pub(super) fn mutate_superblock(image: &Image, args: &MutateArgs) -> Result<Vec<
                 field_name: def.field_name.to_string(),
                 mutation_name: mutation_name.to_string(),
                 value_hex: format!("0x{new_value:0width$X}", width = def.width.bytes() * 2),
+                mutation_class: mutation_class.to_string(),
+                checksum_policy: checksum_policy.to_string(),
                 parser_outcome,
                 classification: classification.to_string(),
                 reason: reason.to_string(),
@@ -113,6 +118,8 @@ pub(super) fn mutate_inodes(image: &Image, args: &MutateArgs) -> Result<Vec<Muta
 
                 let (classification, reason) = classify_mutated_image(args, &output_path)?;
                 let parser_outcome = parser_outcome(&mutated);
+                let (mutation_class, checksum_policy) =
+                    mutation_metadata(args.fix_checksum, &parser_outcome, &classification);
 
                 entries.push(MutatedEntry {
                     output_name,
@@ -121,6 +128,8 @@ pub(super) fn mutate_inodes(image: &Image, args: &MutateArgs) -> Result<Vec<Muta
                     field_name: def.field_name.to_string(),
                     mutation_name: mutation_name.to_string(),
                     value_hex: format!("0x{new_value:0width$X}", width = width.bytes() * 2),
+                    mutation_class: mutation_class.to_string(),
+                    checksum_policy: checksum_policy.to_string(),
                     parser_outcome,
                     classification: classification.to_string(),
                     reason: reason.to_string(),
@@ -182,6 +191,8 @@ pub(super) fn mutate_dirents(image: &Image, args: &MutateArgs) -> Result<Vec<Mut
 
                 let (classification, reason) = classify_mutated_image(args, &output_path)?;
                 let parser_outcome = parser_outcome(&mutated);
+                let (mutation_class, checksum_policy) =
+                    mutation_metadata(args.fix_checksum, &parser_outcome, &classification);
 
                 entries.push(MutatedEntry {
                     output_name,
@@ -190,6 +201,8 @@ pub(super) fn mutate_dirents(image: &Image, args: &MutateArgs) -> Result<Vec<Mut
                     field_name: def.field_name.to_string(),
                     mutation_name: mutation_name.to_string(),
                     value_hex: format!("0x{new_value:0width$X}", width = def.width.bytes() * 2),
+                    mutation_class: mutation_class.to_string(),
+                    checksum_policy: checksum_policy.to_string(),
                     parser_outcome,
                     classification: classification.to_string(),
                     reason: reason.to_string(),

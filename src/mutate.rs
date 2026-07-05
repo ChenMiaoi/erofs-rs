@@ -81,6 +81,7 @@ pub fn run(args: &MutateArgs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::engine::mutation_metadata;
     use super::fields::SUPERBLOCK_FIELDS;
 
     #[test]
@@ -116,5 +117,29 @@ mod tests {
         ] {
             assert!(names.contains(&expected), "missing {expected}");
         }
+    }
+
+    #[test]
+    fn mutation_metadata_classifies_manifest_rows() {
+        assert_eq!(
+            mutation_metadata(true, "strict_accepted_tolerant_clean", "accepted"),
+            ("grammar_preserving", "checksum_repaired")
+        );
+        assert_eq!(
+            mutation_metadata(false, "strict_accepted_tolerant_clean", "rejected_checksum"),
+            ("checksum_invalid", "checksum_raw")
+        );
+        assert_eq!(
+            mutation_metadata(true, "strict_accepted_tolerant_clean", "rejected_invalid"),
+            ("semantic_invalid", "checksum_repaired")
+        );
+        assert_eq!(
+            mutation_metadata(true, "strict_rejected_tolerant_errors", "rejected_invalid"),
+            ("grammar_invalid", "checksum_repaired")
+        );
+        assert_eq!(
+            mutation_metadata(true, "strict_accepted_tolerant_clean", "sanitizer_crash"),
+            ("unsafe_userspace", "checksum_repaired")
+        );
     }
 }

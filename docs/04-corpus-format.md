@@ -128,6 +128,27 @@ Campaign-level files:
 Use `erofs-rs triage` to merge multiple `fuzz-buckets.json` files into an
 `erofs-rs.bucket-db.v1` bucket database.
 
+## Mutation Manifests
+
+`erofs-rs mutate` writes a text manifest beside generated structured mutation
+artifacts. Each row records the output image, target structure, mutated field,
+interesting value, derived mutation class, checksum policy, fsck result, and
+classification reason.
+
+Mutation classes are derived from parser and fsck outcomes:
+
+- `grammar_preserving` for images accepted by both strict parser and fsck,
+- `grammar_edge` for accepted images with tolerant parser recovery,
+- `grammar_invalid` for malformed images rejected by the parser,
+- `semantic_invalid` for parser-decodable images rejected by fsck,
+- `checksum_invalid` for checksum rejections,
+- `unsafe_userspace` and `timeout` for tool crashes, sanitizer findings, and
+  execution timeouts.
+
+Checksum policy is `checksum_repaired` when mutation repaired the superblock
+checksum and `checksum_raw` when the checksum was deliberately left stale or
+mutated directly.
+
 ## Oracle JSON Report
 
 Userspace oracle reports use the `erofs-rs.oracle-report.v1` schema. Generate

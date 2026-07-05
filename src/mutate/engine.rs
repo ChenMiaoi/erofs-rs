@@ -16,6 +16,8 @@ pub(super) struct MutatedEntry {
     pub(super) field_name: String,
     pub(super) mutation_name: String,
     pub(super) value_hex: String,
+    pub(super) mutation_class: String,
+    pub(super) checksum_policy: String,
     pub(super) parser_outcome: String,
     pub(super) classification: String,
     pub(super) reason: String,
@@ -151,6 +153,38 @@ pub(super) fn parser_outcome(image: &Image) -> String {
     }
 }
 
+pub(super) fn mutation_metadata(
+    checksum_repaired: bool,
+    parser_outcome: &str,
+    classification: &str,
+) -> (&'static str, &'static str) {
+    let checksum_policy = if checksum_repaired {
+        "checksum_repaired"
+    } else {
+        "checksum_raw"
+    };
+
+    let mutation_class = if classification == "rejected_checksum" {
+        "checksum_invalid"
+    } else if classification.contains("sanitizer") || classification.contains("crash") {
+        "unsafe_userspace"
+    } else if classification.contains("timeout") {
+        "timeout"
+    } else if classification == "accepted" && parser_outcome == "strict_accepted_tolerant_clean" {
+        "grammar_preserving"
+    } else if classification == "accepted" {
+        "grammar_edge"
+    } else if parser_outcome.starts_with("strict_rejected")
+        || parser_outcome.ends_with("tolerant_failed")
+    {
+        "grammar_invalid"
+    } else {
+        "semantic_invalid"
+    };
+
+    (mutation_class, checksum_policy)
+}
+
 fn fsck_limits(args: &MutateArgs) -> ExecLimits {
     ExecLimits {
         timeout: Duration::from_secs(args.exec_timeout),
@@ -191,6 +225,8 @@ pub(super) fn add_cross_field_mutation(
 
     let (classification, reason) = classify_mutated_image(args, &output_path)?;
     let parser_outcome = parser_outcome(&mutated);
+    let (mutation_class, checksum_policy) =
+        mutation_metadata(args.fix_checksum, &parser_outcome, &classification);
 
     entries.push(MutatedEntry {
         output_name: mutation.output_name,
@@ -203,6 +239,8 @@ pub(super) fn add_cross_field_mutation(
             mutation.new_value,
             width = mutation.width.bytes() * 2
         ),
+        mutation_class: mutation_class.to_string(),
+        checksum_policy: checksum_policy.to_string(),
         parser_outcome,
         classification: classification.to_string(),
         reason: reason.to_string(),
@@ -247,6 +285,8 @@ pub(super) fn add_chunk_mutation(
 
     let (classification, reason) = classify_mutated_image(args, &output_path)?;
     let parser_outcome = parser_outcome(&mutated);
+    let (mutation_class, checksum_policy) =
+        mutation_metadata(args.fix_checksum, &parser_outcome, &classification);
 
     entries.push(MutatedEntry {
         output_name: mutation.output_name,
@@ -259,6 +299,8 @@ pub(super) fn add_chunk_mutation(
             mutation.value,
             width = mutation.value_width.bytes() * 2
         ),
+        mutation_class: mutation_class.to_string(),
+        checksum_policy: checksum_policy.to_string(),
         parser_outcome,
         classification: classification.to_string(),
         reason: reason.to_string(),
@@ -303,6 +345,8 @@ pub(super) fn add_xattr_mutation(
 
     let (classification, reason) = classify_mutated_image(args, &output_path)?;
     let parser_outcome = parser_outcome(&mutated);
+    let (mutation_class, checksum_policy) =
+        mutation_metadata(args.fix_checksum, &parser_outcome, &classification);
 
     entries.push(MutatedEntry {
         output_name: mutation.output_name,
@@ -315,6 +359,8 @@ pub(super) fn add_xattr_mutation(
             mutation.value,
             width = mutation.value_width.bytes() * 2
         ),
+        mutation_class: mutation_class.to_string(),
+        checksum_policy: checksum_policy.to_string(),
         parser_outcome,
         classification: classification.to_string(),
         reason: reason.to_string(),
@@ -359,6 +405,8 @@ pub(super) fn add_compression_mutation(
 
     let (classification, reason) = classify_mutated_image(args, &output_path)?;
     let parser_outcome = parser_outcome(&mutated);
+    let (mutation_class, checksum_policy) =
+        mutation_metadata(args.fix_checksum, &parser_outcome, &classification);
 
     entries.push(MutatedEntry {
         output_name: mutation.output_name,
@@ -371,6 +419,8 @@ pub(super) fn add_compression_mutation(
             mutation.value,
             width = mutation.value_width.bytes() * 2
         ),
+        mutation_class: mutation_class.to_string(),
+        checksum_policy: checksum_policy.to_string(),
         parser_outcome,
         classification: classification.to_string(),
         reason: reason.to_string(),
@@ -415,6 +465,8 @@ pub(super) fn add_fragment_mutation(
 
     let (classification, reason) = classify_mutated_image(args, &output_path)?;
     let parser_outcome = parser_outcome(&mutated);
+    let (mutation_class, checksum_policy) =
+        mutation_metadata(args.fix_checksum, &parser_outcome, &classification);
 
     entries.push(MutatedEntry {
         output_name: mutation.output_name,
@@ -427,6 +479,8 @@ pub(super) fn add_fragment_mutation(
             mutation.value,
             width = mutation.value_width.bytes() * 2
         ),
+        mutation_class: mutation_class.to_string(),
+        checksum_policy: checksum_policy.to_string(),
         parser_outcome,
         classification: classification.to_string(),
         reason: reason.to_string(),
@@ -471,6 +525,8 @@ pub(super) fn add_device_mutation(
 
     let (classification, reason) = classify_mutated_image(args, &output_path)?;
     let parser_outcome = parser_outcome(&mutated);
+    let (mutation_class, checksum_policy) =
+        mutation_metadata(args.fix_checksum, &parser_outcome, &classification);
 
     entries.push(MutatedEntry {
         output_name: mutation.output_name,
@@ -483,6 +539,8 @@ pub(super) fn add_device_mutation(
             mutation.value,
             width = mutation.value_width.bytes() * 2
         ),
+        mutation_class: mutation_class.to_string(),
+        checksum_policy: checksum_policy.to_string(),
         parser_outcome,
         classification: classification.to_string(),
         reason: reason.to_string(),

@@ -654,6 +654,10 @@ fn test_mutate_superblock() {
     assert!(content.contains("# Families: superblock="));
     assert!(content.contains("# Parser: "));
     assert!(content.contains("# Oracle: "));
+    assert!(content.contains("# Mutation classes: "));
+    assert!(content.contains("# Checksum policies: "));
+    assert!(content.contains("checksum_repaired"));
+    assert!(content.contains("checksum_raw"));
 }
 
 #[test]

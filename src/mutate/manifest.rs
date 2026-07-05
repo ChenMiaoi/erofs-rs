@@ -17,10 +17,16 @@ pub(super) fn write_manifest<P: AsRef<Path>>(
     let mut counts: HashMap<String, usize> = HashMap::new();
     let mut family_counts: HashMap<String, usize> = HashMap::new();
     let mut parser_counts: HashMap<String, usize> = HashMap::new();
+    let mut class_counts: HashMap<String, usize> = HashMap::new();
+    let mut checksum_counts: HashMap<String, usize> = HashMap::new();
     for e in entries {
         *counts.entry(e.classification.clone()).or_insert(0) += 1;
         *family_counts.entry(e.family.clone()).or_insert(0) += 1;
         *parser_counts.entry(e.parser_outcome.clone()).or_insert(0) += 1;
+        *class_counts.entry(e.mutation_class.clone()).or_insert(0) += 1;
+        *checksum_counts
+            .entry(e.checksum_policy.clone())
+            .or_insert(0) += 1;
     }
 
     let mut lines = vec![
@@ -45,20 +51,30 @@ pub(super) fn write_manifest<P: AsRef<Path>>(
         format!("# Total mutations: {}", entries.len()),
         String::new(),
         format!(
-            "{:<60} {:<15} {:<20} {:<25} {:<20} {:<20} {}",
-            "output_file", "target", "field", "mutation", "value", "result", "classification"
+            "{:<60} {:<15} {:<20} {:<25} {:<20} {:<20} {:<18} {:<20} {}",
+            "output_file",
+            "target",
+            "field",
+            "mutation",
+            "value",
+            "class",
+            "checksum",
+            "result",
+            "classification"
         ),
-        "-".repeat(135),
+        "-".repeat(175),
     ];
 
     for e in entries {
         lines.push(format!(
-            "{:<60} {:<15} {:<20} {:<25} {:<20} {:<20} {}",
+            "{:<60} {:<15} {:<20} {:<25} {:<20} {:<20} {:<18} {:<20} {}",
             e.output_name,
             e.target_desc,
             e.field_name,
             e.mutation_name,
             e.value_hex,
+            e.mutation_class,
+            e.checksum_policy,
             e.classification,
             e.reason
         ));
@@ -84,6 +100,18 @@ pub(super) fn write_manifest<P: AsRef<Path>>(
         .collect::<Vec<_>>()
         .join(", ");
     lines.push(format!("# Parser: {parser}"));
+    let classes = sorted_counts(&class_counts)
+        .into_iter()
+        .map(|(mutation_class, count)| format!("{mutation_class}={count}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    lines.push(format!("# Mutation classes: {classes}"));
+    let checksum_policies = sorted_counts(&checksum_counts)
+        .into_iter()
+        .map(|(policy, count)| format!("{policy}={count}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    lines.push(format!("# Checksum policies: {checksum_policies}"));
 
     fs::write(path.as_ref(), lines.join("\n") + "\n").map_err(|e| {
         anyhow::anyhow!("failed to write manifest {}: {e}", path.as_ref().display())

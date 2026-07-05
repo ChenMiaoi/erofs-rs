@@ -85,6 +85,7 @@ metadata instead of guessing how an artifact was produced.
 | `fuzz_*.stdout.txt` / `stderr.txt` | `erofs-rs fuzz` | text | Captured tool output with truncation metadata in sidecar |
 | `fuzz-report.txt` | `erofs-rs fuzz` | text | Human-readable campaign summary |
 | `fuzz-buckets.json` | `erofs-rs fuzz` | `erofs-rs.fuzz-buckets.v1` | Machine-readable signature buckets for one campaign |
+| mutation manifest | `erofs-rs mutate` | text table | Per-artifact mutation family, class, checksum policy, parser outcome, and fsck classification |
 | bucket database | `erofs-rs triage` | `erofs-rs.bucket-db.v1` | Cross-campaign signature counts and examples |
 | oracle JSON report | `erofs-rs oracle` | `erofs-rs.oracle-report.v1` | Machine-readable differential oracle rows |
 | coverage manifest | `erofs-rs corpus --mode coverage` | `erofs-rs.coverage-corpus.v1` | Coverage corpus provenance and lifecycle buckets |

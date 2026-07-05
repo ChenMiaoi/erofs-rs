@@ -131,6 +131,10 @@ erofs-rs mutate \
 `mutate` runs `fsck.erofs` for each generated image and accepts the same
 execution-limit flags as `fuzz`: `--exec-timeout`, `--max-output-bytes`,
 `--rss-limit-mb`, and `--no-kill-process-group`.
+Mutation manifests record each artifact's mutation family, parser outcome,
+oracle classification, derived mutation class such as `grammar_preserving`,
+`semantic_invalid`, or `checksum_invalid`, and whether the superblock checksum
+was repaired or intentionally left raw.
 
 ### `corpus` – corpus management
 
