@@ -38,6 +38,14 @@ pub enum SeedManifestError {
     EmptyFeatures { index: usize },
     #[error("seed matrix entry {index} has an empty feature tag at index {feature_index}")]
     EmptyFeature { index: usize, feature_index: usize },
+    #[error(
+        "seed matrix entry {index} has invalid feature tag at index {feature_index}: {feature}"
+    )]
+    InvalidFeature {
+        index: usize,
+        feature_index: usize,
+        feature: String,
+    },
 }
 
 pub fn parse_seed_matrix_manifest(
@@ -77,6 +85,13 @@ pub fn validate_seed_matrix_manifest(entries: &[SeedMatrixEntry]) -> Result<(), 
                     feature_index,
                 });
             }
+            if !is_feature_tag(feature) {
+                return Err(SeedManifestError::InvalidFeature {
+                    index,
+                    feature_index,
+                    feature: feature.clone(),
+                });
+            }
         }
     }
 
@@ -96,6 +111,13 @@ fn require_nonempty(
 
 fn is_sha256_digest(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn is_feature_tag(value: &str) -> bool {
+    let Some((namespace, tag_value)) = value.split_once(':') else {
+        return false;
+    };
+    !namespace.is_empty() && !tag_value.is_empty()
 }
 
 #[cfg(test)]
@@ -204,6 +226,22 @@ mod tests {
         assert!(matches!(
             error,
             SeedManifestError::EmptyFeatures { index: 0 }
+        ));
+    }
+
+    #[test]
+    fn seed_matrix_manifest_rejects_invalid_feature_tag() {
+        let manifest = VALID_MANIFEST.replace("block_size:4096", "block_size");
+
+        let error = parse_seed_matrix_manifest(&manifest).unwrap_err();
+
+        assert!(matches!(
+            error,
+            SeedManifestError::InvalidFeature {
+                index: 0,
+                feature_index: 0,
+                ..
+            }
         ));
     }
 }

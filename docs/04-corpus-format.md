@@ -56,7 +56,9 @@ interpreted as `required` by the Rust validator.
 
 Feature tags use `namespace:value` strings. Prefer stable tags such as
 `block_size:4096`, `compression:lz4`, `layout:chunked`, `xattrs:user`,
-`xattrs:long_prefix`, and `dir_size:multiblock` over prose descriptions.
+`xattrs:long_prefix`, and `dir_size:multiblock` over prose descriptions. The
+Rust manifest validator rejects feature tags without both a namespace and a
+value.
 
 ## Coverage Corpus Manifest
 
