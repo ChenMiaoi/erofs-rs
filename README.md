@@ -294,7 +294,8 @@ replays the minimized corpus with `-runs=0` before collecting it as a review
 artifact. It also uploads `corpus/rust-fuzz/cmin-summary.json`, a
 machine-readable `erofs-rs.cmin-summary.v1` report with cargo-fuzz version,
 nightly rustc version, engine flags, per-target corpus counts before and after
-minimization, artifact counts, and log paths.
+minimization, artifact counts, and log paths. The Rust library validates this
+schema before later automation consumes it.
 
 ### Seed matrix generation
 

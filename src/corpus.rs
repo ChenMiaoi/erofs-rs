@@ -1,15 +1,17 @@
 use crate::cli::{CorpusArgs, CorpusMode};
 use anyhow::{Result, bail};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use thiserror::Error;
 use walkdir::WalkDir;
 
 const COVERAGE_CATEGORY: &str = "coverage-interesting";
 const COVERAGE_MANIFEST_FILE: &str = "coverage-manifest.json";
 const COVERAGE_MANIFEST_SCHEMA: &str = "erofs-rs.coverage-corpus.v1";
+pub const CMIN_SUMMARY_SCHEMA: &str = "erofs-rs.cmin-summary.v1";
 const DEFAULT_COVERAGE_TARGET: &str = "unassigned";
 const MINIMIZED_IMPORT_ROOT: &str = "corpus/seeds/minimized";
 
@@ -82,6 +84,127 @@ struct CoverageTargetStats {
     collected_units: usize,
     duplicates_removed: usize,
     hashes: HashSet<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CminSummaryReport {
+    pub schema: String,
+    pub engine: String,
+    pub engine_version: String,
+    pub toolchain: String,
+    pub run_flags: Vec<String>,
+    pub cmin_flags: Vec<String>,
+    pub regression_flags: Vec<String>,
+    pub targets: Vec<CminTargetSummary>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CminTargetSummary {
+    pub target: String,
+    pub corpus_dir: String,
+    pub artifact_dir: String,
+    pub before_cmin_units: usize,
+    pub after_cmin_units: usize,
+    pub artifact_count: usize,
+    pub run_log: String,
+    pub cmin_log: String,
+    pub regression_log: String,
+}
+
+#[derive(Debug, Error)]
+pub enum CminSummaryError {
+    #[error("failed to decode cmin summary: {0}")]
+    Decode(#[from] serde_json::Error),
+    #[error("unsupported cmin summary schema: {0}")]
+    UnsupportedSchema(String),
+    #[error("cmin summary field {0} is empty")]
+    EmptyField(&'static str),
+    #[error("cmin summary list {0} is empty")]
+    EmptyList(&'static str),
+    #[error(
+        "cmin summary target {target} increased units after cmin: before={before}, after={after}"
+    )]
+    CminIncreased {
+        target: String,
+        before: usize,
+        after: usize,
+    },
+}
+
+pub fn parse_cmin_summary_report(
+    content: &str,
+) -> std::result::Result<CminSummaryReport, CminSummaryError> {
+    let report: CminSummaryReport = serde_json::from_str(content)?;
+    validate_cmin_summary_report(&report)?;
+    Ok(report)
+}
+
+pub fn validate_cmin_summary_report(
+    report: &CminSummaryReport,
+) -> std::result::Result<(), CminSummaryError> {
+    if report.schema != CMIN_SUMMARY_SCHEMA {
+        return Err(CminSummaryError::UnsupportedSchema(report.schema.clone()));
+    }
+
+    require_cmin_nonempty("engine", &report.engine)?;
+    require_cmin_nonempty("engine_version", &report.engine_version)?;
+    require_cmin_nonempty("toolchain", &report.toolchain)?;
+    require_cmin_list("run_flags", &report.run_flags)?;
+    require_cmin_list("cmin_flags", &report.cmin_flags)?;
+    require_cmin_list("regression_flags", &report.regression_flags)?;
+    if report.targets.is_empty() {
+        return Err(CminSummaryError::EmptyList("targets"));
+    }
+
+    for target in &report.targets {
+        validate_cmin_target(target)?;
+    }
+
+    Ok(())
+}
+
+fn validate_cmin_target(target: &CminTargetSummary) -> std::result::Result<(), CminSummaryError> {
+    require_cmin_nonempty("targets.target", &target.target)?;
+    require_cmin_nonempty("targets.corpus_dir", &target.corpus_dir)?;
+    require_cmin_nonempty("targets.artifact_dir", &target.artifact_dir)?;
+    require_cmin_nonempty("targets.run_log", &target.run_log)?;
+    require_cmin_nonempty("targets.cmin_log", &target.cmin_log)?;
+    require_cmin_nonempty("targets.regression_log", &target.regression_log)?;
+
+    if target.after_cmin_units > target.before_cmin_units {
+        return Err(CminSummaryError::CminIncreased {
+            target: target.target.clone(),
+            before: target.before_cmin_units,
+            after: target.after_cmin_units,
+        });
+    }
+
+    Ok(())
+}
+
+fn require_cmin_nonempty(
+    field: &'static str,
+    value: &str,
+) -> std::result::Result<(), CminSummaryError> {
+    if value.is_empty() {
+        return Err(CminSummaryError::EmptyField(field));
+    }
+    Ok(())
+}
+
+fn require_cmin_list(
+    field: &'static str,
+    values: &[String],
+) -> std::result::Result<(), CminSummaryError> {
+    if values.is_empty() {
+        return Err(CminSummaryError::EmptyList(field));
+    }
+    for value in values {
+        require_cmin_nonempty(field, value)?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Default)]
@@ -687,7 +810,8 @@ pub fn run(args: &CorpusArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_COVERAGE_TARGET, file_hash, infer_coverage_target, lifecycle_bucket,
+        CMIN_SUMMARY_SCHEMA, CminSummaryError, DEFAULT_COVERAGE_TARGET, file_hash,
+        infer_coverage_target, lifecycle_bucket, parse_cmin_summary_report,
         should_collect_coverage_file,
     };
     use std::fs;
@@ -758,5 +882,86 @@ mod tests {
             infer_coverage_target(root, Path::new("corpus/rust-fuzz/unit-a")),
             DEFAULT_COVERAGE_TARGET
         );
+    }
+
+    const VALID_CMIN_SUMMARY: &str = r#"{
+  "schema": "erofs-rs.cmin-summary.v1",
+  "engine": "cargo-fuzz",
+  "engine_version": "cargo-fuzz 0.13.1",
+  "toolchain": "rustc 1.86.0-nightly",
+  "run_flags": [
+    "-max_total_time=30",
+    "-artifact_prefix=<target-artifact-dir>/",
+    "-print_final_stats=1"
+  ],
+  "cmin_flags": [
+    "-max_total_time=30"
+  ],
+  "regression_flags": [
+    "-runs=0",
+    "-artifact_prefix=<target-artifact-dir>/"
+  ],
+  "targets": [
+    {
+      "target": "superblock_parse",
+      "corpus_dir": "corpus/rust-fuzz/superblock_parse/corpus",
+      "artifact_dir": "corpus/rust-fuzz/superblock_parse/artifacts",
+      "before_cmin_units": 3,
+      "after_cmin_units": 2,
+      "artifact_count": 1,
+      "run_log": "corpus/rust-fuzz/superblock_parse/run.log",
+      "cmin_log": "corpus/rust-fuzz/superblock_parse/cmin.log",
+      "regression_log": "corpus/rust-fuzz/superblock_parse/regression.log"
+    }
+  ]
+}"#;
+
+    #[test]
+    fn cmin_summary_report_accepts_valid_report() {
+        let report = parse_cmin_summary_report(VALID_CMIN_SUMMARY).unwrap();
+
+        assert_eq!(report.schema, CMIN_SUMMARY_SCHEMA);
+        assert_eq!(report.engine, "cargo-fuzz");
+        assert_eq!(report.targets[0].target, "superblock_parse");
+    }
+
+    #[test]
+    fn cmin_summary_report_rejects_unknown_schema() {
+        let report = VALID_CMIN_SUMMARY.replace(CMIN_SUMMARY_SCHEMA, "erofs-rs.cmin-summary.v0");
+
+        let error = parse_cmin_summary_report(&report).unwrap_err();
+
+        assert!(matches!(error, CminSummaryError::UnsupportedSchema(_)));
+    }
+
+    #[test]
+    fn cmin_summary_report_rejects_empty_flags() {
+        let report = VALID_CMIN_SUMMARY.replace(
+            r#""cmin_flags": [
+    "-max_total_time=30"
+  ]"#,
+            r#""cmin_flags": []"#,
+        );
+
+        let error = parse_cmin_summary_report(&report).unwrap_err();
+
+        assert!(matches!(error, CminSummaryError::EmptyList("cmin_flags")));
+    }
+
+    #[test]
+    fn cmin_summary_report_rejects_unit_count_growth() {
+        let report =
+            VALID_CMIN_SUMMARY.replace(r#""after_cmin_units": 2"#, r#""after_cmin_units": 4"#);
+
+        let error = parse_cmin_summary_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            CminSummaryError::CminIncreased {
+                target,
+                before: 3,
+                after: 4,
+            } if target == "superblock_parse"
+        ));
     }
 }
