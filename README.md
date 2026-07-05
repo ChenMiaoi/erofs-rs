@@ -272,7 +272,9 @@ files, classification, and signature without relying on directory names.
 `bundle` creates this manifest from a fuzz sidecar, verifies the artifact
 SHA-256, includes captured stdout/stderr when the sidecar records them, and
 hashes any optional replay, oracle, or kernel report paths supplied on the
-command line.
+command line. JSON replay, oracle, and kernel reports are parsed with their
+stable schemas before they enter the bundle; legacy text reports remain opaque
+attachments.
 
 ### Coverage-guided fuzz targets
 

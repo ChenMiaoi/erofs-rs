@@ -3,6 +3,9 @@ use crate::finding_bundle::{
     BundleArtifact, BundleFileRef, FINDING_BUNDLE_SCHEMA, FindingBundleManifest,
     validate_finding_bundle_manifest,
 };
+use crate::kernel_replay::parse_kernel_replay_report;
+use crate::oracle::parse_oracle_json_report;
+use crate::replay::parse_replay_report;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -12,6 +15,23 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 const FUZZ_ARTIFACT_SCHEMA: &str = "erofs-rs.fuzz-artifact.v1";
+
+#[derive(Clone, Copy, Debug)]
+enum OptionalReportKind {
+    Replay,
+    Oracle,
+    Kernel,
+}
+
+impl OptionalReportKind {
+    fn field(self) -> &'static str {
+        match self {
+            Self::Replay => "replay_report",
+            Self::Oracle => "oracle_report",
+            Self::Kernel => "kernel_report",
+        }
+    }
+}
 
 #[derive(Clone, Debug, Deserialize)]
 struct BundleSidecar {
@@ -113,6 +133,29 @@ fn resolve_optional_report(path: Option<&str>, field: &str) -> Result<Option<Pat
         .transpose()
 }
 
+fn validate_optional_json_report(path: Option<&PathBuf>, kind: OptionalReportKind) -> Result<()> {
+    let Some(path) = path else {
+        return Ok(());
+    };
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("failed to read {} {}", kind.field(), path.display()))?;
+    if !content.trim_start().starts_with('{') {
+        return Ok(());
+    }
+
+    match kind {
+        OptionalReportKind::Replay => parse_replay_report(&content)
+            .map(|_| ())
+            .with_context(|| format!("failed to parse replay_report {}", path.display())),
+        OptionalReportKind::Oracle => parse_oracle_json_report(&content)
+            .map(|_| ())
+            .with_context(|| format!("failed to parse oracle_report {}", path.display())),
+        OptionalReportKind::Kernel => parse_kernel_replay_report(&content)
+            .map(|_| ())
+            .with_context(|| format!("failed to parse kernel_report {}", path.display())),
+    }
+}
+
 fn portable_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
@@ -163,6 +206,9 @@ fn build_manifest(args: &BundleArgs) -> Result<FindingBundleManifest> {
     let replay_report = resolve_optional_report(args.replay_report.as_deref(), "replay_report")?;
     let oracle_report = resolve_optional_report(args.oracle_report.as_deref(), "oracle_report")?;
     let kernel_report = resolve_optional_report(args.kernel_report.as_deref(), "kernel_report")?;
+    validate_optional_json_report(replay_report.as_ref(), OptionalReportKind::Replay)?;
+    validate_optional_json_report(oracle_report.as_ref(), OptionalReportKind::Oracle)?;
+    validate_optional_json_report(kernel_report.as_ref(), OptionalReportKind::Kernel)?;
 
     let artifact_size = fs::metadata(&artifact_path)
         .with_context(|| format!("failed to stat artifact {}", artifact_path.display()))?
@@ -284,5 +330,164 @@ mod tests {
         let written: FindingBundleManifest =
             serde_json::from_str(&fs::read_to_string(output).unwrap()).unwrap();
         assert_eq!(written, manifest);
+    }
+
+    #[test]
+    fn bundle_manifest_validates_json_replay_report() {
+        let tmp = TempDir::new().unwrap();
+        let artifact = tmp.path().join("fuzz_seed_iter1.erofs");
+        let sidecar = tmp.path().join("fuzz_seed_iter1.json");
+        let replay_report = tmp.path().join("replay-report.json");
+        let output = tmp.path().join("bundle.json");
+        fs::write(&artifact, b"image").unwrap();
+        let artifact_sha256 = sha256_file(&artifact).unwrap();
+        fs::write(
+            &sidecar,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "schema": "erofs-rs.fuzz-artifact.v1",
+                "artifact_path": artifact.to_string_lossy(),
+                "artifact_sha256": artifact_sha256,
+                "classification": "accepted",
+                "signature": "accepted: fsck accepted the image"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            &replay_report,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "schema": "erofs-rs.replay-report.v1",
+                "sidecar_path": sidecar.to_string_lossy(),
+                "artifact_path": artifact.to_string_lossy(),
+                "artifact_sha256": artifact_sha256,
+                "fsck_path": "fsck.erofs",
+                "rng_seed": 1,
+                "iteration": 1,
+                "strategy": "mutation",
+                "seed_name": "seed.erofs",
+                "original": {
+                    "classification": "accepted",
+                    "reason": "fsck accepted the image",
+                    "exit_code": 0,
+                    "timed_out": false,
+                    "signature": "accepted: fsck accepted the image"
+                },
+                "replay": {
+                    "classification": "accepted",
+                    "reason": "fsck accepted the image",
+                    "exit_code": 0,
+                    "signal": null,
+                    "timed_out": false,
+                    "killed_process_group": false,
+                    "rss_limit_mb": null,
+                    "stdout_truncated": false,
+                    "stderr_truncated": false
+                },
+                "comparison": {
+                    "classification_match": true,
+                    "exit_code_match": true,
+                    "timeout_match": true,
+                    "replay_match": true
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let args = BundleArgs {
+            sidecar: sidecar.to_string_lossy().to_string(),
+            artifact: None,
+            stdout: None,
+            stderr: None,
+            replay_report: Some(replay_report.to_string_lossy().to_string()),
+            oracle_report: None,
+            kernel_report: None,
+            output: output.to_string_lossy().to_string(),
+        };
+        let manifest = build_manifest(&args).unwrap();
+
+        assert_eq!(
+            manifest.replay_report.as_ref().unwrap().path,
+            "replay-report.json"
+        );
+    }
+
+    #[test]
+    fn bundle_manifest_rejects_invalid_json_report() {
+        let tmp = TempDir::new().unwrap();
+        let artifact = tmp.path().join("fuzz_seed_iter1.erofs");
+        let sidecar = tmp.path().join("fuzz_seed_iter1.json");
+        let oracle_report = tmp.path().join("oracle-report.json");
+        let output = tmp.path().join("bundle.json");
+        fs::write(&artifact, b"image").unwrap();
+        let artifact_sha256 = sha256_file(&artifact).unwrap();
+        fs::write(
+            &sidecar,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "schema": "erofs-rs.fuzz-artifact.v1",
+                "artifact_path": artifact.to_string_lossy(),
+                "artifact_sha256": artifact_sha256,
+                "classification": "accepted",
+                "signature": "accepted: fsck accepted the image"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(&oracle_report, r#"{"schema":"erofs-rs.oracle-report.v0"}"#).unwrap();
+
+        let args = BundleArgs {
+            sidecar: sidecar.to_string_lossy().to_string(),
+            artifact: None,
+            stdout: None,
+            stderr: None,
+            replay_report: None,
+            oracle_report: Some(oracle_report.to_string_lossy().to_string()),
+            kernel_report: None,
+            output: output.to_string_lossy().to_string(),
+        };
+
+        let error = build_manifest(&args).unwrap_err();
+        assert!(error.to_string().contains("failed to parse oracle_report"));
+    }
+
+    #[test]
+    fn bundle_manifest_keeps_text_replay_reports_as_opaque_files() {
+        let tmp = TempDir::new().unwrap();
+        let artifact = tmp.path().join("fuzz_seed_iter1.erofs");
+        let sidecar = tmp.path().join("fuzz_seed_iter1.json");
+        let replay_report = tmp.path().join("replay-report.txt");
+        let output = tmp.path().join("bundle.json");
+        fs::write(&artifact, b"image").unwrap();
+        fs::write(&replay_report, "# EROFS Fuzz Artifact Replay Report\n").unwrap();
+        let artifact_sha256 = sha256_file(&artifact).unwrap();
+        fs::write(
+            &sidecar,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "schema": "erofs-rs.fuzz-artifact.v1",
+                "artifact_path": artifact.to_string_lossy(),
+                "artifact_sha256": artifact_sha256,
+                "classification": "accepted",
+                "signature": "accepted: fsck accepted the image"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let args = BundleArgs {
+            sidecar: sidecar.to_string_lossy().to_string(),
+            artifact: None,
+            stdout: None,
+            stderr: None,
+            replay_report: Some(replay_report.to_string_lossy().to_string()),
+            oracle_report: None,
+            kernel_report: None,
+            output: output.to_string_lossy().to_string(),
+        };
+        let manifest = build_manifest(&args).unwrap();
+
+        assert_eq!(
+            manifest.replay_report.as_ref().unwrap().path,
+            "replay-report.txt"
+        );
     }
 }
