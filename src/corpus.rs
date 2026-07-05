@@ -1311,6 +1311,8 @@ fn write_report(path: &Path, summary: &CorpusSummary, records: &[ArtifactRecord]
 }
 
 fn write_coverage_manifest(path: &Path, manifest: &CoverageManifest) -> Result<()> {
+    validate_coverage_manifest(manifest)
+        .map_err(|error| anyhow::anyhow!("generated coverage manifest is invalid: {error}"))?;
     let json = serde_json::to_string_pretty(manifest)
         .map_err(|e| anyhow::anyhow!("failed to encode coverage manifest: {e}"))?;
     fs::write(path, json + "\n").map_err(|e| {

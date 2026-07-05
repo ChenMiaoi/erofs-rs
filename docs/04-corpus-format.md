@@ -99,7 +99,8 @@ one minimized unit cannot be represented twice in a review manifest. The
 recommended import directories and per-unit import paths must match the
 manifest root, target name, and copied unit name. Target names must be single
 portable path components, and copied paths must use
-`coverage-interesting/<unit>`.
+`coverage-interesting/<unit>`. Coverage mode validates the generated manifest
+with the same schema checks before writing it.
 
 When collecting a cargo-fuzz tree, coverage mode reads `<target>/corpus/`
 entries and skips `<target>/artifacts/` so crash artifacts stay in triage

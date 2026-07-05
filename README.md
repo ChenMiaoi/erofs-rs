@@ -165,6 +165,8 @@ paths, duplicate collected units, and inconsistent global or per-target counts.
 It also rejects recommended import directories or paths that do not match the
 manifest root, target name, and copied unit name, and requires target names and
 copied paths to stay within the minimized corpus import layout.
+Coverage mode validates its generated manifest with the same schema checks
+before writing it.
 For mutation manifests, malformed rows and rows that reference missing artifact
 files are rejected instead of being skipped.
 Reports also include lifecycle buckets such as `queue/userspace`,
