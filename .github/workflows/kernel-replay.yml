@@ -143,7 +143,6 @@ jobs:
               MALFORMED_QEMU_LOG="$qemu_log" \
               MALFORMED_QEMU_EXIT_CODE="$qemu_rc_file"; then
               replay="needs-triage"
-              failures=$((failures + 1))
             fi
 
             qemu_rc="$(cat "$qemu_rc_file" 2>/dev/null || printf '1')"
@@ -156,6 +155,8 @@ jobs:
               "${kernel_args[@]}" \
               --output "$json_report"; then
               report="failed"
+            fi
+            if [ "$replay" != "rejected" ] || [ "$report" != "written" ]; then
               failures=$((failures + 1))
             fi
 
