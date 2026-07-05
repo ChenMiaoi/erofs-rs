@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 const FUZZ_ARTIFACT_SCHEMA: &str = "erofs-rs.fuzz-artifact.v1";
@@ -40,6 +41,13 @@ struct FuzzArtifactCommands {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct FuzzArtifactVersions {
+    tool_git: Option<String>,
+    erofs_utils_git: Option<String>,
+    linux_git: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct FuzzArtifactSidecar {
     schema: String,
     tool: String,
@@ -53,6 +61,7 @@ struct FuzzArtifactSidecar {
     artifact_path: String,
     mutations: Vec<MutationRecord>,
     commands: FuzzArtifactCommands,
+    versions: FuzzArtifactVersions,
     fsck_exit_code: i32,
     fsck_timed_out: bool,
     stdout_truncated: bool,
@@ -443,6 +452,29 @@ fn fsck_command(fsck_path: &str, artifact_path: &Path) -> Vec<String> {
     vec![fsck_path.to_string(), artifact_path.display().to_string()]
 }
 
+fn git_revision(path: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("rev-parse")
+        .arg("HEAD")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let revision = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!revision.is_empty()).then_some(revision)
+}
+
+fn collect_versions() -> FuzzArtifactVersions {
+    FuzzArtifactVersions {
+        tool_git: git_revision(Path::new(".")),
+        erofs_utils_git: git_revision(Path::new("vendor/erofs-utils")),
+        linux_git: git_revision(Path::new("vendor/linux")),
+    }
+}
+
 struct FuzzSidecarInput<'a> {
     args: &'a FuzzArgs,
     rng_seed: u64,
@@ -478,6 +510,7 @@ fn build_fuzz_sidecar(input: FuzzSidecarInput<'_>) -> FuzzArtifactSidecar {
         commands: FuzzArtifactCommands {
             fsck: fsck_command(&input.args.fsck, input.artifact_path),
         },
+        versions: collect_versions(),
         fsck_exit_code: input.fsck_exit_code,
         fsck_timed_out: input.fsck_timed_out,
         stdout_truncated: input.stdout_truncated,
@@ -709,7 +742,7 @@ fn run_mutation_fuzz(args: &FuzzArgs) -> Result<()> {
 mod tests {
     use super::{
         FUZZ_ARTIFACT_SCHEMA, FuzzArtifactSidecar, FuzzRun, FuzzSidecarInput, FuzzSummary,
-        OutcomeKind, build_fuzz_sidecar, mutation_record, sha256_hex,
+        OutcomeKind, build_fuzz_sidecar, git_revision, mutation_record, sha256_hex,
     };
     use crate::cli::{FuzzArgs, FuzzStrategy};
     use crate::image::{FieldWidth, Image};
@@ -799,6 +832,11 @@ mod tests {
         assert_eq!(decoded.fsck_exit_code, 1);
         assert!(decoded.stderr_truncated);
         assert_eq!(decoded.mutations[0].old.as_deref(), Some("0x00"));
+    }
+
+    #[test]
+    fn git_revision_returns_none_for_missing_path() {
+        assert_eq!(git_revision(Path::new("does-not-exist")), None);
     }
 
     #[test]

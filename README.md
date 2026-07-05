@@ -156,9 +156,10 @@ used so the run can be replayed.
 Each unique `fuzz_*.erofs` artifact is written with a matching JSON sidecar and
 captured fsck output files. The sidecar records the tool version, RNG seed,
 iteration, strategy, seed and artifact SHA-256 digests, mutation records, fsck
-command, classification, exit status, timeout state, and output truncation
-flags. `--exec-timeout` controls the per-artifact fsck timeout, and
-`--max-output-bytes` caps the retained bytes for each fsck output stream.
+command, git revisions when available, classification, exit status, timeout
+state, and output truncation flags. `--exec-timeout` controls the per-artifact
+fsck timeout, and `--max-output-bytes` caps the retained bytes for each fsck
+output stream.
 
 When stdout is an interactive terminal, `fuzz` opens a post-run TUI dashboard
 with the RNG seed, campaign totals, actionable finding count, classification
