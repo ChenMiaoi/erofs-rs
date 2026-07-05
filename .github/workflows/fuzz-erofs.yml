@@ -32,6 +32,12 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.85.0
 
+      - name: Install nightly Rust toolchain
+        run: rustup toolchain install nightly --profile minimal
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -104,6 +110,26 @@ jobs:
             -max_total_time=120 -print_final_stats=1 \
             2>&1 | tee corpus/fuzz-out/fuzz.log
 
+      - name: Run Rust libFuzzer campaign
+        run: |
+          mkdir -p corpus/rust-fuzz
+          targets=(
+            superblock_parse
+            inode_locate
+            dirent_locate
+            checksum_fix_no_panic
+          )
+          for target in "${targets[@]}"; do
+            corpus_dir="corpus/rust-fuzz/${target}/corpus"
+            mkdir -p "$corpus_dir"
+            cargo +nightly fuzz run "$target" "$corpus_dir" -- \
+              -max_total_time=30 -print_final_stats=1 \
+              2>&1 | tee "corpus/rust-fuzz/${target}/run.log"
+            cargo +nightly fuzz cmin "$target" "$corpus_dir" -- \
+              -max_total_time=30 \
+              2>&1 | tee "corpus/rust-fuzz/${target}/cmin.log"
+          done
+
       - name: Build sanitizer erofs-utils
         run: ./scripts/build-erofs-utils-sanitized.sh
 
@@ -127,6 +153,7 @@ jobs:
           path: |
             corpus/artifacts/
             corpus/fuzz-out/
+            corpus/rust-fuzz/
             corpus/erofs-utils-safety/
             corpus/erofs-utils-safety-sanitized/
             corpus/mutated/*/manifest.txt

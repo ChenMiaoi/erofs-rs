@@ -268,9 +268,11 @@ CI is split by cost and feedback speed:
 - `.github/workflows/fuzz-erofs.yml` runs weekly and by manual dispatch. It
   builds `vendor/erofs-utils`, runs tests, generates seed corpus, runs
   structured mutations, classifies artifacts, builds the upstream libFuzzer
-  target, runs a short fuzzing session, builds ASAN/UBSAN-instrumented
+  target, runs a short fuzzing session, runs the Rust-native libFuzzer targets
+  and `cargo fuzz cmin` corpus minimization, builds ASAN/UBSAN-instrumented
   `erofs-utils`, scans seeds and generated artifacts for tool crashes,
-  timeouts, and sanitizer diagnostics, and uploads reports, logs, and manifests.
+  timeouts, and sanitizer diagnostics, and uploads reports, minimized corpora,
+  logs, and manifests.
 
 The `erofs-utils` safety checks do not prove the tools are safe. They report a
 bounded smoke result such as `tool crashes: 0`, `tool timeouts: 0`, and
