@@ -10,7 +10,7 @@ use walkdir::WalkDir;
 
 const COVERAGE_CATEGORY: &str = "coverage-interesting";
 const COVERAGE_MANIFEST_FILE: &str = "coverage-manifest.json";
-const COVERAGE_MANIFEST_SCHEMA: &str = "erofs-rs.coverage-corpus.v1";
+pub const COVERAGE_MANIFEST_SCHEMA: &str = "erofs-rs.coverage-corpus.v1";
 pub const CMIN_SUMMARY_SCHEMA: &str = "erofs-rs.cmin-summary.v1";
 const DEFAULT_COVERAGE_TARGET: &str = "unassigned";
 const MINIMIZED_IMPORT_ROOT: &str = "corpus/seeds/minimized";
@@ -42,40 +42,43 @@ struct ArtifactRecord {
     hash: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
-struct CoverageManifest {
-    schema: &'static str,
-    mode: &'static str,
-    input_dir: String,
-    output_dir: String,
-    total_input_units: usize,
-    collected_units: usize,
-    unique_hashes: usize,
-    duplicates_removed: usize,
-    recommended_import_root: String,
-    targets: Vec<CoverageTargetSummary>,
-    units: Vec<CoverageManifestUnit>,
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoverageManifest {
+    pub schema: String,
+    pub mode: String,
+    pub input_dir: String,
+    pub output_dir: String,
+    pub total_input_units: usize,
+    pub collected_units: usize,
+    pub unique_hashes: usize,
+    pub duplicates_removed: usize,
+    pub recommended_import_root: String,
+    pub targets: Vec<CoverageTargetSummary>,
+    pub units: Vec<CoverageManifestUnit>,
 }
 
-#[derive(Clone, Debug, Serialize)]
-struct CoverageTargetSummary {
-    target: String,
-    input_units: usize,
-    collected_units: usize,
-    unique_hashes: usize,
-    duplicates_removed: usize,
-    recommended_import_dir: String,
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoverageTargetSummary {
+    pub target: String,
+    pub input_units: usize,
+    pub collected_units: usize,
+    pub unique_hashes: usize,
+    pub duplicates_removed: usize,
+    pub recommended_import_dir: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
-struct CoverageManifestUnit {
-    target: String,
-    source_path: String,
-    copied_path: String,
-    sha256: String,
-    size_bytes: u64,
-    lifecycle: String,
-    recommended_import_path: String,
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoverageManifestUnit {
+    pub target: String,
+    pub source_path: String,
+    pub copied_path: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+    pub lifecycle: String,
+    pub recommended_import_path: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -84,6 +87,237 @@ struct CoverageTargetStats {
     collected_units: usize,
     duplicates_removed: usize,
     hashes: HashSet<String>,
+}
+
+#[derive(Debug, Error)]
+pub enum CoverageManifestError {
+    #[error("failed to decode coverage manifest: {0}")]
+    Decode(#[from] serde_json::Error),
+    #[error("unsupported coverage manifest schema: {0}")]
+    UnsupportedSchema(String),
+    #[error("coverage manifest mode is {0}, expected coverage")]
+    UnsupportedMode(String),
+    #[error("coverage manifest field {0} is empty")]
+    EmptyField(&'static str),
+    #[error("coverage manifest field {field} has invalid SHA-256 digest: {sha256}")]
+    InvalidSha256 { field: &'static str, sha256: String },
+    #[error("coverage manifest contains duplicate target summary: {0}")]
+    DuplicateTarget(String),
+    #[error("coverage manifest unit target has no summary: {0}")]
+    MissingTargetSummary(String),
+    #[error("coverage manifest count mismatch for {field}: expected {expected}, actual {actual}")]
+    CountMismatch {
+        field: &'static str,
+        expected: usize,
+        actual: usize,
+    },
+}
+
+pub fn parse_coverage_manifest(
+    content: &str,
+) -> std::result::Result<CoverageManifest, CoverageManifestError> {
+    let manifest: CoverageManifest = serde_json::from_str(content)?;
+    validate_coverage_manifest(&manifest)?;
+    Ok(manifest)
+}
+
+pub fn validate_coverage_manifest(
+    manifest: &CoverageManifest,
+) -> std::result::Result<(), CoverageManifestError> {
+    if manifest.schema != COVERAGE_MANIFEST_SCHEMA {
+        return Err(CoverageManifestError::UnsupportedSchema(
+            manifest.schema.clone(),
+        ));
+    }
+    if manifest.mode != "coverage" {
+        return Err(CoverageManifestError::UnsupportedMode(
+            manifest.mode.clone(),
+        ));
+    }
+
+    require_coverage_nonempty("input_dir", &manifest.input_dir)?;
+    require_coverage_nonempty("output_dir", &manifest.output_dir)?;
+    require_coverage_nonempty("recommended_import_root", &manifest.recommended_import_root)?;
+
+    require_coverage_count(
+        "collected_units",
+        manifest.units.len(),
+        manifest.collected_units,
+    )?;
+    let unique_unit_hashes = manifest
+        .units
+        .iter()
+        .map(|unit| unit.sha256.as_str())
+        .collect::<HashSet<_>>()
+        .len();
+    require_coverage_count("unique_hashes", unique_unit_hashes, manifest.unique_hashes)?;
+    require_coverage_count(
+        "total_input_units",
+        manifest
+            .unique_hashes
+            .checked_add(manifest.duplicates_removed)
+            .ok_or(CoverageManifestError::CountMismatch {
+                field: "total_input_units",
+                expected: usize::MAX,
+                actual: manifest.total_input_units,
+            })?,
+        manifest.total_input_units,
+    )?;
+
+    let mut units_by_target: HashMap<&str, usize> = HashMap::new();
+    let mut hashes_by_target: HashMap<&str, HashSet<&str>> = HashMap::new();
+    for unit in &manifest.units {
+        validate_coverage_unit(unit)?;
+        *units_by_target.entry(unit.target.as_str()).or_insert(0) += 1;
+        hashes_by_target
+            .entry(unit.target.as_str())
+            .or_default()
+            .insert(unit.sha256.as_str());
+    }
+
+    let mut target_names = HashSet::new();
+    for target in &manifest.targets {
+        validate_coverage_target_summary(target, &units_by_target, &hashes_by_target)?;
+        if !target_names.insert(target.target.as_str()) {
+            return Err(CoverageManifestError::DuplicateTarget(
+                target.target.clone(),
+            ));
+        }
+    }
+
+    for target in units_by_target.keys() {
+        if !target_names.contains(target) {
+            return Err(CoverageManifestError::MissingTargetSummary(
+                (*target).to_string(),
+            ));
+        }
+    }
+
+    require_coverage_sum(
+        "targets.input_units",
+        manifest.targets.iter().map(|target| target.input_units),
+        manifest.total_input_units,
+    )?;
+    require_coverage_sum(
+        "targets.collected_units",
+        manifest.targets.iter().map(|target| target.collected_units),
+        manifest.collected_units,
+    )?;
+    require_coverage_sum(
+        "targets.duplicates_removed",
+        manifest
+            .targets
+            .iter()
+            .map(|target| target.duplicates_removed),
+        manifest.duplicates_removed,
+    )?;
+
+    Ok(())
+}
+
+fn validate_coverage_target_summary(
+    target: &CoverageTargetSummary,
+    units_by_target: &HashMap<&str, usize>,
+    hashes_by_target: &HashMap<&str, HashSet<&str>>,
+) -> std::result::Result<(), CoverageManifestError> {
+    require_coverage_nonempty("targets.target", &target.target)?;
+    require_coverage_nonempty(
+        "targets.recommended_import_dir",
+        &target.recommended_import_dir,
+    )?;
+    require_coverage_count(
+        "targets.collected_units",
+        *units_by_target.get(target.target.as_str()).unwrap_or(&0),
+        target.collected_units,
+    )?;
+    require_coverage_count(
+        "targets.unique_hashes",
+        hashes_by_target
+            .get(target.target.as_str())
+            .map(HashSet::len)
+            .unwrap_or(0),
+        target.unique_hashes,
+    )?;
+    require_coverage_count(
+        "targets.input_units",
+        target
+            .unique_hashes
+            .checked_add(target.duplicates_removed)
+            .ok_or(CoverageManifestError::CountMismatch {
+                field: "targets.input_units",
+                expected: usize::MAX,
+                actual: target.input_units,
+            })?,
+        target.input_units,
+    )?;
+    Ok(())
+}
+
+fn validate_coverage_unit(
+    unit: &CoverageManifestUnit,
+) -> std::result::Result<(), CoverageManifestError> {
+    require_coverage_nonempty("units.target", &unit.target)?;
+    require_coverage_nonempty("units.source_path", &unit.source_path)?;
+    require_coverage_nonempty("units.copied_path", &unit.copied_path)?;
+    require_coverage_nonempty("units.lifecycle", &unit.lifecycle)?;
+    require_coverage_nonempty(
+        "units.recommended_import_path",
+        &unit.recommended_import_path,
+    )?;
+    if !is_sha256_digest(&unit.sha256) {
+        return Err(CoverageManifestError::InvalidSha256 {
+            field: "units.sha256",
+            sha256: unit.sha256.clone(),
+        });
+    }
+    Ok(())
+}
+
+fn require_coverage_nonempty(
+    field: &'static str,
+    value: &str,
+) -> std::result::Result<(), CoverageManifestError> {
+    if value.is_empty() {
+        return Err(CoverageManifestError::EmptyField(field));
+    }
+    Ok(())
+}
+
+fn require_coverage_count(
+    field: &'static str,
+    expected: usize,
+    actual: usize,
+) -> std::result::Result<(), CoverageManifestError> {
+    if expected != actual {
+        return Err(CoverageManifestError::CountMismatch {
+            field,
+            expected,
+            actual,
+        });
+    }
+    Ok(())
+}
+
+fn require_coverage_sum(
+    field: &'static str,
+    values: impl IntoIterator<Item = usize>,
+    actual: usize,
+) -> std::result::Result<(), CoverageManifestError> {
+    let mut expected = 0usize;
+    for value in values {
+        expected = expected
+            .checked_add(value)
+            .ok_or(CoverageManifestError::CountMismatch {
+                field,
+                expected: usize::MAX,
+                actual,
+            })?;
+    }
+    require_coverage_count(field, expected, actual)
+}
+
+fn is_sha256_digest(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -601,8 +835,8 @@ fn collect_coverage_artifacts(
         &records,
     );
     let manifest = CoverageManifest {
-        schema: COVERAGE_MANIFEST_SCHEMA,
-        mode: "coverage",
+        schema: COVERAGE_MANIFEST_SCHEMA.to_string(),
+        mode: "coverage".to_string(),
         input_dir: portable_path(input_root),
         output_dir: portable_path(output_dir),
         total_input_units: summary.total_files,
@@ -810,9 +1044,9 @@ pub fn run(args: &CorpusArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CMIN_SUMMARY_SCHEMA, CminSummaryError, DEFAULT_COVERAGE_TARGET, file_hash,
-        infer_coverage_target, lifecycle_bucket, parse_cmin_summary_report,
-        should_collect_coverage_file,
+        CMIN_SUMMARY_SCHEMA, COVERAGE_MANIFEST_SCHEMA, CminSummaryError, CoverageManifestError,
+        DEFAULT_COVERAGE_TARGET, file_hash, infer_coverage_target, lifecycle_bucket,
+        parse_cmin_summary_report, parse_coverage_manifest, should_collect_coverage_file,
     };
     use std::fs;
     use std::path::Path;
@@ -882,6 +1116,145 @@ mod tests {
             infer_coverage_target(root, Path::new("corpus/rust-fuzz/unit-a")),
             DEFAULT_COVERAGE_TARGET
         );
+    }
+
+    const VALID_COVERAGE_MANIFEST: &str = r#"{
+  "schema": "erofs-rs.coverage-corpus.v1",
+  "mode": "coverage",
+  "input_dir": "corpus/rust-fuzz",
+  "output_dir": "corpus/minimized/rust-fuzz",
+  "total_input_units": 2,
+  "collected_units": 1,
+  "unique_hashes": 1,
+  "duplicates_removed": 1,
+  "recommended_import_root": "corpus/seeds/minimized",
+  "targets": [
+    {
+      "target": "superblock_parse",
+      "input_units": 2,
+      "collected_units": 1,
+      "unique_hashes": 1,
+      "duplicates_removed": 1,
+      "recommended_import_dir": "corpus/seeds/minimized/superblock_parse"
+    }
+  ],
+  "units": [
+    {
+      "target": "superblock_parse",
+      "source_path": "superblock_parse/corpus/unit-a",
+      "copied_path": "coverage-interesting/unit-a",
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "size_bytes": 10,
+      "lifecycle": "queue/userspace",
+      "recommended_import_path": "corpus/seeds/minimized/superblock_parse/unit-a"
+    }
+  ]
+}"#;
+
+    #[test]
+    fn coverage_manifest_accepts_valid_report() {
+        let report = parse_coverage_manifest(VALID_COVERAGE_MANIFEST).unwrap();
+
+        assert_eq!(report.schema, COVERAGE_MANIFEST_SCHEMA);
+        assert_eq!(report.mode, "coverage");
+        assert_eq!(report.targets[0].target, "superblock_parse");
+    }
+
+    #[test]
+    fn coverage_manifest_rejects_unknown_schema() {
+        let report = VALID_COVERAGE_MANIFEST
+            .replace(COVERAGE_MANIFEST_SCHEMA, "erofs-rs.coverage-corpus.v0");
+
+        let error = parse_coverage_manifest(&report).unwrap_err();
+
+        assert!(matches!(error, CoverageManifestError::UnsupportedSchema(_)));
+    }
+
+    #[test]
+    fn coverage_manifest_rejects_invalid_digest() {
+        let report = VALID_COVERAGE_MANIFEST.replace(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "not-sha",
+        );
+
+        let error = parse_coverage_manifest(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            CoverageManifestError::InvalidSha256 {
+                field: "units.sha256",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn coverage_manifest_rejects_total_count_mismatch() {
+        let report = VALID_COVERAGE_MANIFEST
+            .replace(r#""total_input_units": 2"#, r#""total_input_units": 3"#);
+
+        let error = parse_coverage_manifest(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            CoverageManifestError::CountMismatch {
+                field: "total_input_units",
+                expected: 2,
+                actual: 3,
+            }
+        ));
+    }
+
+    #[test]
+    fn coverage_manifest_rejects_unit_without_target_summary() {
+        let report = VALID_COVERAGE_MANIFEST.replace(
+            r#"  "targets": [
+    {
+      "target": "superblock_parse",
+      "input_units": 2,
+      "collected_units": 1,
+      "unique_hashes": 1,
+      "duplicates_removed": 1,
+      "recommended_import_dir": "corpus/seeds/minimized/superblock_parse"
+    }
+  ],"#,
+            r#"  "targets": [],"#,
+        );
+
+        let error = parse_coverage_manifest(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            CoverageManifestError::MissingTargetSummary(target)
+                if target == "superblock_parse"
+        ));
+    }
+
+    #[test]
+    fn coverage_manifest_rejects_duplicate_target_summary() {
+        let report = VALID_COVERAGE_MANIFEST.replace(
+            r#"      "duplicates_removed": 1,
+      "recommended_import_dir": "corpus/seeds/minimized/superblock_parse"
+    }"#,
+            r#"      "duplicates_removed": 1,
+      "recommended_import_dir": "corpus/seeds/minimized/superblock_parse"
+    },
+    {
+      "target": "superblock_parse",
+      "input_units": 2,
+      "collected_units": 1,
+      "unique_hashes": 1,
+      "duplicates_removed": 1,
+      "recommended_import_dir": "corpus/seeds/minimized/superblock_parse"
+    }"#,
+        );
+
+        let error = parse_coverage_manifest(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            CoverageManifestError::DuplicateTarget(target) if target == "superblock_parse"
+        ));
     }
 
     const VALID_CMIN_SUMMARY: &str = r#"{

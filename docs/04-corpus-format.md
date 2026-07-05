@@ -81,6 +81,10 @@ then collect its minimized output with `corpus --mode coverage`. Reviewers can
 use each unit's `recommended_import_path` when deciding which minimized units to
 copy into the long-lived seed corpus.
 
+The Rust library parser rejects unknown coverage-manifest schemas, malformed
+SHA-256 digests, empty required paths, and inconsistent global or per-target
+counts before callers use the report for seed import decisions.
+
 When collecting a cargo-fuzz tree, coverage mode reads `<target>/corpus/`
 entries and skips `<target>/artifacts/` so crash artifacts stay in triage
 bundles instead of entering the minimized seed import path.

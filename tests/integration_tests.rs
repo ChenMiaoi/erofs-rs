@@ -991,8 +991,9 @@ fn test_corpus_coverage_mode_collects_minimized_units() {
     );
 
     let manifest_path = artifacts.join("coverage-manifest.json");
-    let manifest: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(manifest_path).unwrap()).unwrap();
+    let manifest_content = fs::read_to_string(manifest_path).unwrap();
+    erofs_rs::corpus::parse_coverage_manifest(&manifest_content).unwrap();
+    let manifest: serde_json::Value = serde_json::from_str(&manifest_content).unwrap();
     assert_eq!(manifest["schema"], "erofs-rs.coverage-corpus.v1");
     assert_eq!(manifest["mode"], "coverage");
     assert_eq!(manifest["total_input_units"], 3);
