@@ -15,6 +15,7 @@ pub mod inject;
 pub mod inode;
 pub mod mutate;
 pub mod oracle;
+pub mod parse;
 pub(crate) mod tui;
 
 pub use checksum::{crc32c, fix_checksum};
@@ -25,3 +26,4 @@ pub use fsck::{
 };
 pub use image::{FieldWidth, Image, Superblock, read_image, write_image};
 pub use inode::{Inode, locate_inodes};
+pub use parse::{ParseError, ParseMode, ParseReport, ParseStage, parse_image};

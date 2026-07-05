@@ -4,6 +4,7 @@ use erofs_rs::{
     fsck::{ExecLimits, run_fsck, run_fsck_with_limits, run_fsck_with_timeout},
     image::{EROFS_SUPER_OFFSET, FieldWidth, Image, read_image, write_image},
     inode::locate_inodes,
+    parse::{ParseMode, ParseStage, parse_image},
 };
 use std::fs;
 use std::path::PathBuf;
@@ -104,6 +105,42 @@ fn test_zero_blkszbits_returns_error() {
 
     let err = img.superblock().unwrap_err().to_string();
     assert!(err.contains("unsupported EROFS blkszbits"));
+}
+
+#[test]
+fn test_strict_parse_rejects_invalid_superblock() {
+    let img = Image::new(vec![0; EROFS_SUPER_OFFSET + 0x5C]);
+    let err = parse_image(&img, ParseMode::Strict)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("strict superblock parse failed"));
+}
+
+#[test]
+fn test_tolerant_parse_records_superblock_error() {
+    let img = Image::new(vec![0; EROFS_SUPER_OFFSET + 0x5C]);
+    let report = parse_image(&img, ParseMode::FuzzTolerant).unwrap();
+
+    assert!(report.superblock.is_none());
+    assert_eq!(report.errors.len(), 1);
+    assert_eq!(report.errors[0].stage, ParseStage::Superblock);
+    assert_eq!(report.errors[0].offset, Some(EROFS_SUPER_OFFSET));
+    assert!(report.offsets_seen.contains(&EROFS_SUPER_OFFSET));
+}
+
+#[test]
+fn test_tolerant_parse_reports_valid_fixture_offsets() {
+    let img = read_image(fixture("single.erofs")).unwrap();
+    let report = parse_image(&img, ParseMode::FuzzTolerant).unwrap();
+
+    assert!(report.superblock.is_some());
+    assert!(report.errors.is_empty());
+    assert_eq!(
+        report.inodes.iter().filter(|entry| entry.is_ok()).count(),
+        2
+    );
+    assert!(report.dirents.iter().filter(|entry| entry.is_ok()).count() >= 3);
+    assert!(report.offsets_seen.contains(&EROFS_SUPER_OFFSET));
 }
 
 #[test]
