@@ -121,7 +121,9 @@ The report records the artifact SHA-256 when an artifact is supplied, the
 kernel revision when `--kernel-git` is supplied, the QEMU exit code, a kernel
 outcome, a normalized signature, and the dangerous pattern that triggered an
 unsafe verdict. Passing `--artifact-sha256` verifies that the replayed artifact
-matches the expected digest before writing the report.
+matches the expected digest before writing the report. The Rust library parser
+rejects unknown schemas, malformed artifact digests, empty required fields, and
+unsafe reports that omit the dangerous pattern.
 
 ## Finding Bundle Manifest
 

@@ -6,6 +6,7 @@ use std::fs;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use thiserror::Error;
 
 pub const KERNEL_REPLAY_REPORT_SCHEMA: &str = "erofs-rs.kernel-replay.v1";
 
@@ -20,6 +21,7 @@ pub enum KernelReplayOutcome {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct KernelReplayReport {
     pub schema: String,
     pub artifact_sha256: Option<String>,
@@ -39,6 +41,20 @@ pub struct KernelReplayVerdict {
     pub dangerous_pattern: Option<String>,
 }
 
+#[derive(Debug, Error)]
+pub enum KernelReplayReportError {
+    #[error("failed to decode kernel replay report: {0}")]
+    Decode(#[from] serde_json::Error),
+    #[error("unsupported kernel replay report schema: {0}")]
+    UnsupportedSchema(String),
+    #[error("kernel replay report field {0} is empty")]
+    EmptyField(&'static str),
+    #[error("kernel replay report field {field} has invalid SHA-256 digest: {sha256}")]
+    InvalidSha256 { field: &'static str, sha256: String },
+    #[error("unsafe kernel replay report is missing dangerous_pattern")]
+    MissingDangerousPattern,
+}
+
 pub fn build_kernel_replay_report(
     dmesg: &str,
     qemu_exit_code: i32,
@@ -56,6 +72,58 @@ pub fn build_kernel_replay_report(
         signature: verdict.signature,
         dangerous_pattern: verdict.dangerous_pattern,
     }
+}
+
+pub fn parse_kernel_replay_report(
+    content: &str,
+) -> std::result::Result<KernelReplayReport, KernelReplayReportError> {
+    let report: KernelReplayReport = serde_json::from_str(content)?;
+    validate_kernel_replay_report(&report)?;
+    Ok(report)
+}
+
+pub fn validate_kernel_replay_report(
+    report: &KernelReplayReport,
+) -> std::result::Result<(), KernelReplayReportError> {
+    if report.schema != KERNEL_REPLAY_REPORT_SCHEMA {
+        return Err(KernelReplayReportError::UnsupportedSchema(
+            report.schema.clone(),
+        ));
+    }
+    if let Some(sha256) = &report.artifact_sha256 {
+        require_sha256("artifact_sha256", sha256)?;
+    }
+    require_nonempty("message", &report.message)?;
+    require_nonempty("signature", &report.signature)?;
+    if let Some(pattern) = &report.dangerous_pattern {
+        require_nonempty("dangerous_pattern", pattern)?;
+    } else if report.outcome == KernelReplayOutcome::Unsafe {
+        return Err(KernelReplayReportError::MissingDangerousPattern);
+    }
+    Ok(())
+}
+
+fn require_nonempty(
+    field: &'static str,
+    value: &str,
+) -> std::result::Result<(), KernelReplayReportError> {
+    if value.is_empty() {
+        return Err(KernelReplayReportError::EmptyField(field));
+    }
+    Ok(())
+}
+
+fn require_sha256(
+    field: &'static str,
+    value: &str,
+) -> std::result::Result<(), KernelReplayReportError> {
+    if !is_sha256_digest(value) {
+        return Err(KernelReplayReportError::InvalidSha256 {
+            field,
+            sha256: value.to_string(),
+        });
+    }
+    Ok(())
 }
 
 fn sha256_file(path: &Path) -> Result<String> {
@@ -258,12 +326,23 @@ fn normalize_signature_detail(detail: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        KERNEL_REPLAY_REPORT_SCHEMA, KernelReplayOutcome, build_kernel_replay_report,
-        classify_dmesg_text, run,
+        KERNEL_REPLAY_REPORT_SCHEMA, KernelReplayOutcome, KernelReplayReportError,
+        build_kernel_replay_report, classify_dmesg_text, parse_kernel_replay_report, run,
     };
     use crate::cli::KernelReportArgs;
     use sha2::{Digest, Sha256};
     use std::fs;
+
+    const VALID_REPORT: &str = r#"{
+  "schema": "erofs-rs.kernel-replay.v1",
+  "artifact_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "kernel_git": "linux-test-rev",
+  "qemu_exit_code": 0,
+  "outcome": "rejected",
+  "message": "failed to verify superblock checksum",
+  "signature": "kernel_rejected: failed to verify superblock checksum",
+  "dangerous_pattern": null
+}"#;
 
     #[test]
     fn dmesg_classification_prioritizes_unsafe_output() {
@@ -333,6 +412,75 @@ mod tests {
         assert_eq!(decoded, report);
         assert_eq!(decoded.schema, KERNEL_REPLAY_REPORT_SCHEMA);
         assert_eq!(decoded.outcome, KernelReplayOutcome::Accepted);
+    }
+
+    #[test]
+    fn kernel_replay_report_parser_accepts_valid_report() {
+        let report = parse_kernel_replay_report(VALID_REPORT).unwrap();
+
+        assert_eq!(report.schema, KERNEL_REPLAY_REPORT_SCHEMA);
+        assert_eq!(report.outcome, KernelReplayOutcome::Rejected);
+        assert_eq!(report.kernel_git.as_deref(), Some("linux-test-rev"));
+    }
+
+    #[test]
+    fn kernel_replay_report_parser_rejects_unknown_schema() {
+        let report = VALID_REPORT.replace("erofs-rs.kernel-replay.v1", "erofs-rs.kernel-replay.v0");
+
+        let error = parse_kernel_replay_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            KernelReplayReportError::UnsupportedSchema(_)
+        ));
+    }
+
+    #[test]
+    fn kernel_replay_report_parser_rejects_invalid_artifact_hash() {
+        let report = VALID_REPORT.replace(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "not-a-sha256",
+        );
+
+        let error = parse_kernel_replay_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            KernelReplayReportError::InvalidSha256 {
+                field: "artifact_sha256",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn kernel_replay_report_parser_rejects_unsafe_without_pattern() {
+        let report = VALID_REPORT
+            .replace(r#""outcome": "rejected""#, r#""outcome": "unsafe""#)
+            .replace(
+                r#""signature": "kernel_rejected: failed to verify superblock checksum""#,
+                r#""signature": "kernel_unsafe: BUG: KASAN""#,
+            );
+
+        let error = parse_kernel_replay_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            KernelReplayReportError::MissingDangerousPattern
+        ));
+    }
+
+    #[test]
+    fn kernel_replay_report_parser_rejects_unknown_fields() {
+        let report = VALID_REPORT.replace(
+            r#""dangerous_pattern": null"#,
+            r#""dangerous_pattern": null,
+  "unexpected": true"#,
+        );
+
+        let error = parse_kernel_replay_report(&report).unwrap_err();
+
+        assert!(matches!(error, KernelReplayReportError::Decode(_)));
     }
 
     #[test]
