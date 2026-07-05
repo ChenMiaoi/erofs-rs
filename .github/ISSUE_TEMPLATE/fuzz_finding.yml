@@ -24,6 +24,24 @@ body:
     validations:
       required: true
   - type: textarea
+    id: sidecar
+    attributes:
+      label: Sidecar metadata
+      description: Attach or paste the matching `fuzz_*.json` sidecar plus any `.stdout.txt` and `.stderr.txt` files.
+      render: json
+      placeholder: |
+        {
+          "schema": "erofs-rs.fuzz-artifact.v1",
+          "artifact_sha256": "...",
+          "commands": {
+            "fsck": ["...", "..."],
+            "dump": ["...", "-s", "..."],
+            "kernel_replay": ["make", "smoke-malformed", "MALFORMED_IMG=..."]
+          }
+        }
+    validations:
+      required: true
+  - type: textarea
     id: command
     attributes:
       label: Command
@@ -51,6 +69,7 @@ body:
       label: Replay coverage
       options:
         - label: Replayed with `fsck.erofs`.
+        - label: Replayed with `dump.erofs -s`.
         - label: Replayed with `make smoke-malformed MALFORMED_IMG=...`.
         - label: Checked for panic, BUG, KASAN, UBSAN, lockdep, hung task, or unexpected QEMU exit.
   - type: textarea
