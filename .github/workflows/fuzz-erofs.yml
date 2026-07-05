@@ -129,9 +129,12 @@ jobs:
           )
           for target in "${targets[@]}"; do
             corpus_dir="corpus/rust-fuzz/${target}/corpus"
-            mkdir -p "$corpus_dir"
+            artifact_dir="corpus/rust-fuzz/${target}/artifacts"
+            mkdir -p "$corpus_dir" "$artifact_dir"
             cargo +nightly fuzz run "$target" "$corpus_dir" -- \
-              -max_total_time=30 -print_final_stats=1 \
+              -max_total_time=30 \
+              -artifact_prefix="${artifact_dir}/" \
+              -print_final_stats=1 \
               2>&1 | tee "corpus/rust-fuzz/${target}/run.log"
             cargo +nightly fuzz cmin "$target" "$corpus_dir" -- \
               -max_total_time=30 \
