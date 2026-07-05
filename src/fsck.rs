@@ -318,8 +318,8 @@ pub fn classify_fsck_result(
         return ("rejected_timeout", "fsck timed out");
     }
 
-    if matches!(exit_code, 134 | 135 | 136 | 139) {
-        return ("rejected_crash", "fsck exited on a fatal signal");
+    if let Some(signal) = fatal_signal_name(exit_code) {
+        return ("rejected_crash", signal);
     }
 
     let has_error_keyword = [
@@ -364,4 +364,39 @@ pub fn classify_fsck_result(
     }
 
     ("accepted_with_errors", "fsck exited 0 but printed errors")
+}
+
+fn fatal_signal_name(exit_code: i32) -> Option<&'static str> {
+    match exit_code {
+        134 => Some("fsck terminated with SIGABRT"),
+        135 => Some("fsck terminated with SIGBUS"),
+        136 => Some("fsck terminated with SIGFPE"),
+        139 => Some("fsck terminated with SIGSEGV"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::classify_fsck_result;
+
+    #[test]
+    fn classifies_common_fatal_signals() {
+        assert_eq!(
+            classify_fsck_result(134, "", ""),
+            ("rejected_crash", "fsck terminated with SIGABRT")
+        );
+        assert_eq!(
+            classify_fsck_result(135, "", ""),
+            ("rejected_crash", "fsck terminated with SIGBUS")
+        );
+        assert_eq!(
+            classify_fsck_result(136, "", ""),
+            ("rejected_crash", "fsck terminated with SIGFPE")
+        );
+        assert_eq!(
+            classify_fsck_result(139, "", ""),
+            ("rejected_crash", "fsck terminated with SIGSEGV")
+        );
+    }
 }
