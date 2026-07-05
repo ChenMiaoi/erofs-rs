@@ -7,7 +7,7 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -15,6 +15,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 const FUZZ_ARTIFACT_SCHEMA: &str = "erofs-rs.fuzz-artifact.v1";
+const FUZZ_BUCKET_REPORT_SCHEMA: &str = "erofs-rs.fuzz-buckets.v1";
 const TOOL_NAME: &str = "erofs-rs";
 const TOOL_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_DUMP_PATH: &str = "./build/erofs-utils/dump/dump.erofs";
@@ -77,6 +78,32 @@ struct FuzzArtifactSidecar {
     signature: String,
     stdout_path: String,
     stderr_path: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct FuzzBucketReport {
+    schema: String,
+    tool: String,
+    tool_version: String,
+    rng_seed: u64,
+    duration_millis: u128,
+    iterations: u64,
+    unique_images: usize,
+    seed_count: usize,
+    actionable_findings: usize,
+    text_report_path: String,
+    buckets: Vec<FuzzSignatureBucket>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct FuzzSignatureBucket {
+    signature: String,
+    classification: String,
+    outcome_kind: String,
+    count: usize,
+    first_iteration: u64,
+    example_seed_name: String,
+    reason: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -596,6 +623,70 @@ fn write_fuzz_sidecar(path: &Path, sidecar: &FuzzArtifactSidecar) -> Result<()> 
         .map_err(|e| anyhow::anyhow!("failed to write fuzz sidecar {}: {e}", path.display()))
 }
 
+fn fuzz_bucket_report_path(report_path: &str) -> PathBuf {
+    Path::new(report_path).with_file_name("fuzz-buckets.json")
+}
+
+fn bucket_from_run(run: &FuzzRun) -> FuzzSignatureBucket {
+    FuzzSignatureBucket {
+        signature: run.signature.clone(),
+        classification: run.classification.clone(),
+        outcome_kind: run.outcome_kind().label().to_string(),
+        count: 1,
+        first_iteration: run.iteration,
+        example_seed_name: run.seed_name.clone(),
+        reason: run.reason.clone(),
+    }
+}
+
+fn build_fuzz_bucket_report(summary: &FuzzSummary) -> FuzzBucketReport {
+    let mut buckets = BTreeMap::<String, FuzzSignatureBucket>::new();
+    for run in summary.runs.iter().filter(|run| run.is_finding()) {
+        buckets
+            .entry(run.signature.clone())
+            .and_modify(|bucket| {
+                bucket.count += 1;
+                if run.iteration < bucket.first_iteration {
+                    bucket.classification = run.classification.clone();
+                    bucket.outcome_kind = run.outcome_kind().label().to_string();
+                    bucket.first_iteration = run.iteration;
+                    bucket.example_seed_name = run.seed_name.clone();
+                    bucket.reason = run.reason.clone();
+                }
+            })
+            .or_insert_with(|| bucket_from_run(run));
+    }
+
+    let mut buckets: Vec<_> = buckets.into_values().collect();
+    buckets.sort_by(|a, b| {
+        b.count
+            .cmp(&a.count)
+            .then_with(|| a.signature.cmp(&b.signature))
+    });
+
+    FuzzBucketReport {
+        schema: FUZZ_BUCKET_REPORT_SCHEMA.to_string(),
+        tool: TOOL_NAME.to_string(),
+        tool_version: TOOL_VERSION.to_string(),
+        rng_seed: summary.rng_seed,
+        duration_millis: summary.duration.as_millis(),
+        iterations: summary.iterations,
+        unique_images: summary.runs.len(),
+        seed_count: summary.seed_count,
+        actionable_findings: summary.finding_count(),
+        text_report_path: summary.report_path.clone(),
+        buckets,
+    }
+}
+
+fn write_fuzz_bucket_report(path: &Path, summary: &FuzzSummary) -> Result<()> {
+    let report = build_fuzz_bucket_report(summary);
+    let json = serde_json::to_string_pretty(&report)
+        .map_err(|e| anyhow::anyhow!("failed to serialize fuzz bucket report: {e}"))?;
+    fs::write(path, json + "\n")
+        .map_err(|e| anyhow::anyhow!("failed to write fuzz bucket report {}: {e}", path.display()))
+}
+
 fn write_fuzz_report(summary: &FuzzSummary) -> Result<()> {
     let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut buckets: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
@@ -685,6 +776,7 @@ fn write_fuzz_report(summary: &FuzzSummary) -> Result<()> {
 
     fs::write(&summary.report_path, lines.join("\n") + "\n")
         .map_err(|e| anyhow::anyhow!("failed to write fuzz report: {e}"))?;
+    write_fuzz_bucket_report(&fuzz_bucket_report_path(&summary.report_path), summary)?;
     Ok(())
 }
 
@@ -822,6 +914,10 @@ fn run_mutation_fuzz(args: &FuzzArgs) -> Result<()> {
     println!("  Expected rejects: {}", summary.expected_reject_count());
     println!("  Unsafe findings: {}", summary.unsafe_finding_count());
     println!("  Report: {}", summary.report_path);
+    println!(
+        "  Bucket report: {}",
+        fuzz_bucket_report_path(&summary.report_path).display()
+    );
 
     if should_show_tui(args) {
         if let Err(error) = crate::tui::show_fuzz_summary(&summary) {
@@ -836,9 +932,9 @@ fn run_mutation_fuzz(args: &FuzzArgs) -> Result<()> {
 mod tests {
     use super::run as run_fuzz;
     use super::{
-        DEFAULT_DUMP_PATH, FUZZ_ARTIFACT_SCHEMA, FuzzArtifactSidecar, FuzzRun, FuzzSidecarInput,
-        FuzzSummary, OutcomeKind, build_fuzz_sidecar, finding_signature, git_revision,
-        mutation_record, sha256_hex, strategy_name, write_fuzz_report,
+        DEFAULT_DUMP_PATH, FUZZ_ARTIFACT_SCHEMA, FUZZ_BUCKET_REPORT_SCHEMA, FuzzArtifactSidecar,
+        FuzzRun, FuzzSidecarInput, FuzzSummary, OutcomeKind, build_fuzz_sidecar, finding_signature,
+        git_revision, mutation_record, sha256_hex, strategy_name, write_fuzz_report,
     };
     use crate::cli::{FuzzArgs, FuzzStrategy};
     use crate::image::{FieldWidth, Image};
@@ -1063,11 +1159,16 @@ mod tests {
     fn fuzz_report_groups_findings_by_signature() {
         let tmp = TempDir::new().unwrap();
         let report_path = tmp.path().join("fuzz-report.txt");
-        let mut summary = summary(vec![
-            run("accepted_with_errors"),
-            run("accepted_with_errors"),
-            run("rejected_invalid"),
-        ]);
+        let bucket_report_path = tmp.path().join("fuzz-buckets.json");
+        let mut later = run("accepted_with_errors");
+        later.iteration = 2;
+        later.seed_name = "later".to_string();
+        let mut first = run("accepted_with_errors");
+        first.iteration = 1;
+        first.seed_name = "first".to_string();
+        let mut expected_reject = run("rejected_invalid");
+        expected_reject.iteration = 3;
+        let mut summary = summary(vec![later, first, expected_reject]);
         summary.report_path = report_path.display().to_string();
 
         write_fuzz_report(&summary).unwrap();
@@ -1076,5 +1177,35 @@ mod tests {
         assert!(report.contains("## Finding Buckets"));
         assert!(report.contains("- accepted_with_errors: reason: 2"));
         assert!(!report.contains("- rejected_invalid: reason"));
+
+        let bucket_report: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(bucket_report_path).unwrap()).unwrap();
+        assert_eq!(bucket_report["schema"], FUZZ_BUCKET_REPORT_SCHEMA);
+        assert_eq!(bucket_report["rng_seed"].as_u64(), Some(123));
+        assert_eq!(bucket_report["actionable_findings"].as_u64(), Some(2));
+        let buckets = bucket_report["buckets"].as_array().unwrap();
+        assert_eq!(buckets.len(), 1);
+        assert_eq!(
+            buckets[0]["signature"],
+            serde_json::Value::String("accepted_with_errors: reason".to_string())
+        );
+        assert_eq!(
+            buckets[0]["classification"],
+            serde_json::Value::String("accepted_with_errors".to_string())
+        );
+        assert_eq!(
+            buckets[0]["outcome_kind"],
+            serde_json::Value::String("interesting_semantic".to_string())
+        );
+        assert_eq!(buckets[0]["count"].as_u64(), Some(2));
+        assert_eq!(buckets[0]["first_iteration"].as_u64(), Some(1));
+        assert_eq!(
+            buckets[0]["example_seed_name"],
+            serde_json::Value::String("first".to_string())
+        );
+        assert_eq!(
+            buckets[0]["reason"],
+            serde_json::Value::String("reason".to_string())
+        );
     }
 }
