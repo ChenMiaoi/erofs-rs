@@ -6,10 +6,12 @@ use crate::image::{EROFS_SUPER_OFFSET, FieldWidth, Image, read_image, write_imag
 use crate::inode::{inode_data_offset, is_directory_inode, is_extended_inode, locate_inodes};
 use crate::parse::{ParseMode, parse_image};
 use anyhow::{Result, bail};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 const EROFS_FEATURE_INCOMPAT_48BIT: u32 = 0x00000080;
 const EROFS_FEATURE_INCOMPAT_DEVICE_TABLE: u64 = 0x00000008;
 const EROFS_INODE_COMPRESSED_FULL: u64 = 1;
@@ -562,6 +564,12 @@ fn seed_name(input: &str) -> String {
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "seed".to_string())
+}
+
+fn sha256_hex(image: &Image) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(image.as_bytes());
+    hex::encode(hasher.finalize())
 }
 
 fn round_up_for_mutation(value: usize, align: usize) -> Result<usize> {
@@ -2026,6 +2034,7 @@ fn write_manifest<P: AsRef<Path>>(
     path: P,
     args: &MutateArgs,
     entries: &[MutatedEntry],
+    input_sha256: &str,
 ) -> Result<()> {
     let seed = seed_name(&args.input);
     let mut counts: HashMap<String, usize> = HashMap::new();
@@ -2040,7 +2049,12 @@ fn write_manifest<P: AsRef<Path>>(
     let mut lines = vec![
         format!("# EROFS Mutation Manifest"),
         format!("# Input: {}", args.input),
+        format!("# Input SHA-256: {input_sha256}"),
         format!("# Seed: {seed}"),
+        format!("# Tool version: {VERSION}"),
+        format!("# Target: {}", args.target),
+        format!("# Output directory: {}", args.output_dir),
+        format!("# fsck: {}", args.fsck),
         format!("# Fix checksum: {}", args.fix_checksum),
         format!("# Total mutations: {}", entries.len()),
         String::new(),
@@ -2109,6 +2123,7 @@ pub fn run(args: &MutateArgs) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("failed to create output directory: {e}"))?;
 
     let image = read_image(&args.input)?;
+    let input_sha256 = sha256_hex(&image);
 
     let mut all_entries = Vec::new();
 
@@ -2137,7 +2152,7 @@ pub fn run(args: &MutateArgs) -> Result<()> {
         ),
     }
 
-    write_manifest(&args.manifest, args, &all_entries)?;
+    write_manifest(&args.manifest, args, &all_entries, &input_sha256)?;
 
     println!(
         "\nDone. Generated {} mutations in {}",
