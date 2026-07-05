@@ -6,13 +6,14 @@ use crate::image::{Image, read_image, write_image};
 use crate::inode::locate_inodes;
 use crate::parse::{ParseMode, parse_image};
 use anyhow::{Context, Result, bail};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
 use tempfile::NamedTempFile;
+use thiserror::Error;
 
-const ORACLE_REPORT_SCHEMA: &str = "erofs-rs.oracle-report.v1";
+pub const ORACLE_REPORT_SCHEMA: &str = "erofs-rs.oracle-report.v1";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum OracleStatus {
@@ -43,34 +44,159 @@ struct OracleCheck {
     reason: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-struct OracleJsonReport {
-    schema: &'static str,
-    input: String,
-    checks: Vec<OracleJsonCheck>,
-    matrix: Vec<OracleMatrixEntry>,
-    interesting_findings: usize,
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OracleJsonReport {
+    pub schema: String,
+    pub input: String,
+    pub checks: Vec<OracleJsonCheck>,
+    pub matrix: Vec<OracleMatrixEntry>,
+    pub interesting_findings: usize,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-struct OracleJsonCheck {
-    name: String,
-    status: String,
-    classification: String,
-    reason: String,
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OracleJsonCheck {
+    pub name: String,
+    pub status: String,
+    pub classification: String,
+    pub reason: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-struct OracleMatrixEntry {
-    name: String,
-    left: String,
-    right: String,
-    left_status: String,
-    right_status: String,
-    left_classification: String,
-    right_classification: String,
-    verdict: String,
-    disagrees: bool,
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OracleMatrixEntry {
+    pub name: String,
+    pub left: String,
+    pub right: String,
+    pub left_status: String,
+    pub right_status: String,
+    pub left_classification: String,
+    pub right_classification: String,
+    pub verdict: String,
+    pub disagrees: bool,
+}
+
+#[derive(Debug, Error)]
+pub enum OracleJsonReportError {
+    #[error("failed to decode oracle JSON report: {0}")]
+    Decode(#[from] serde_json::Error),
+    #[error("unsupported oracle JSON report schema: {0}")]
+    UnsupportedSchema(String),
+    #[error("oracle JSON report field {0} is empty")]
+    EmptyField(&'static str),
+    #[error("oracle JSON report list {0} is empty")]
+    EmptyList(&'static str),
+    #[error("oracle JSON report field {field} has invalid status: {status}")]
+    InvalidStatus { field: &'static str, status: String },
+    #[error("oracle JSON report field {field} has invalid verdict: {verdict}")]
+    InvalidVerdict {
+        field: &'static str,
+        verdict: String,
+    },
+    #[error("oracle JSON report matrix entry {0} has inconsistent verdict")]
+    InconsistentVerdict(String),
+    #[error("oracle JSON report interesting_findings is {actual}, expected {expected}")]
+    InterestingFindingsMismatch { expected: usize, actual: usize },
+}
+
+pub fn parse_oracle_json_report(
+    content: &str,
+) -> std::result::Result<OracleJsonReport, OracleJsonReportError> {
+    let report: OracleJsonReport = serde_json::from_str(content)?;
+    validate_oracle_json_report(&report)?;
+    Ok(report)
+}
+
+pub fn validate_oracle_json_report(
+    report: &OracleJsonReport,
+) -> std::result::Result<(), OracleJsonReportError> {
+    if report.schema != ORACLE_REPORT_SCHEMA {
+        return Err(OracleJsonReportError::UnsupportedSchema(
+            report.schema.clone(),
+        ));
+    }
+    require_nonempty("input", &report.input)?;
+    if report.checks.is_empty() {
+        return Err(OracleJsonReportError::EmptyList("checks"));
+    }
+    for check in &report.checks {
+        validate_json_check(check)?;
+    }
+    for entry in &report.matrix {
+        validate_matrix_entry(entry)?;
+    }
+    let expected = interesting_findings(&report.matrix);
+    if report.interesting_findings != expected {
+        return Err(OracleJsonReportError::InterestingFindingsMismatch {
+            expected,
+            actual: report.interesting_findings,
+        });
+    }
+    Ok(())
+}
+
+fn validate_json_check(check: &OracleJsonCheck) -> std::result::Result<(), OracleJsonReportError> {
+    require_nonempty("checks.name", &check.name)?;
+    require_status("checks.status", &check.status)?;
+    require_nonempty("checks.classification", &check.classification)?;
+    require_nonempty("checks.reason", &check.reason)?;
+    Ok(())
+}
+
+fn validate_matrix_entry(
+    entry: &OracleMatrixEntry,
+) -> std::result::Result<(), OracleJsonReportError> {
+    require_nonempty("matrix.name", &entry.name)?;
+    require_nonempty("matrix.left", &entry.left)?;
+    require_nonempty("matrix.right", &entry.right)?;
+    require_status("matrix.left_status", &entry.left_status)?;
+    require_status("matrix.right_status", &entry.right_status)?;
+    require_nonempty("matrix.left_classification", &entry.left_classification)?;
+    require_nonempty("matrix.right_classification", &entry.right_classification)?;
+    require_verdict("matrix.verdict", &entry.verdict)?;
+    if (entry.verdict == "disagree") != entry.disagrees {
+        return Err(OracleJsonReportError::InconsistentVerdict(
+            entry.name.clone(),
+        ));
+    }
+    Ok(())
+}
+
+fn require_nonempty(
+    field: &'static str,
+    value: &str,
+) -> std::result::Result<(), OracleJsonReportError> {
+    if value.is_empty() {
+        return Err(OracleJsonReportError::EmptyField(field));
+    }
+    Ok(())
+}
+
+fn require_status(
+    field: &'static str,
+    status: &str,
+) -> std::result::Result<(), OracleJsonReportError> {
+    if matches!(status, "accepted" | "rejected" | "skipped") {
+        return Ok(());
+    }
+    Err(OracleJsonReportError::InvalidStatus {
+        field,
+        status: status.to_string(),
+    })
+}
+
+fn require_verdict(
+    field: &'static str,
+    verdict: &str,
+) -> std::result::Result<(), OracleJsonReportError> {
+    if matches!(verdict, "agree" | "disagree" | "skipped") {
+        return Ok(());
+    }
+    Err(OracleJsonReportError::InvalidVerdict {
+        field,
+        verdict: verdict.to_string(),
+    })
 }
 
 impl OracleCheck {
@@ -377,7 +503,7 @@ fn json_report(
     matrix: &[OracleMatrixEntry],
 ) -> OracleJsonReport {
     OracleJsonReport {
-        schema: ORACLE_REPORT_SCHEMA,
+        schema: ORACLE_REPORT_SCHEMA.to_string(),
         input: input.to_string_lossy().to_string(),
         checks: checks
             .iter()
@@ -438,7 +564,8 @@ pub fn run(args: &OracleArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        OracleCheck, OracleStatus, compare_checks, run_rust_strict_parser, run_rust_tolerant_parser,
+        ORACLE_REPORT_SCHEMA, OracleCheck, OracleJsonReportError, OracleStatus, compare_checks,
+        parse_oracle_json_report, run_rust_strict_parser, run_rust_tolerant_parser,
     };
     use crate::image::{FieldWidth, read_image};
     use crate::parse::{ParseMode, parse_image};
@@ -449,6 +576,118 @@ mod tests {
             .join("tests")
             .join("fixtures")
             .join(name)
+    }
+
+    const VALID_JSON_REPORT: &str = r#"{
+  "schema": "erofs-rs.oracle-report.v1",
+  "input": "sample.erofs",
+  "checks": [
+    {
+      "name": "rust_parser",
+      "status": "accepted",
+      "classification": "accepted",
+      "reason": "ok"
+    },
+    {
+      "name": "fsck",
+      "status": "rejected",
+      "classification": "rejected_invalid",
+      "reason": "invalid image"
+    }
+  ],
+  "matrix": [
+    {
+      "name": "rust_parser_vs_fsck",
+      "left": "rust_parser",
+      "right": "fsck",
+      "left_status": "accepted",
+      "right_status": "rejected",
+      "left_classification": "accepted",
+      "right_classification": "rejected_invalid",
+      "verdict": "disagree",
+      "disagrees": true
+    }
+  ],
+  "interesting_findings": 1
+}"#;
+
+    #[test]
+    fn oracle_json_report_parser_accepts_valid_report() {
+        let report = parse_oracle_json_report(VALID_JSON_REPORT).unwrap();
+
+        assert_eq!(report.schema, ORACLE_REPORT_SCHEMA);
+        assert_eq!(report.input, "sample.erofs");
+        assert_eq!(report.checks.len(), 2);
+        assert_eq!(report.interesting_findings, 1);
+    }
+
+    #[test]
+    fn oracle_json_report_parser_rejects_unknown_schema() {
+        let report =
+            VALID_JSON_REPORT.replace("erofs-rs.oracle-report.v1", "erofs-rs.oracle-report.v0");
+
+        let error = parse_oracle_json_report(&report).unwrap_err();
+
+        assert!(matches!(error, OracleJsonReportError::UnsupportedSchema(_)));
+    }
+
+    #[test]
+    fn oracle_json_report_parser_rejects_invalid_status() {
+        let report =
+            VALID_JSON_REPORT.replace(r#""status": "accepted""#, r#""status": "maybe_accepted""#);
+
+        let error = parse_oracle_json_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            OracleJsonReportError::InvalidStatus {
+                field: "checks.status",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn oracle_json_report_parser_rejects_inconsistent_verdict() {
+        let report = VALID_JSON_REPORT.replace(r#""verdict": "disagree""#, r#""verdict": "agree""#);
+
+        let error = parse_oracle_json_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            OracleJsonReportError::InconsistentVerdict(_)
+        ));
+    }
+
+    #[test]
+    fn oracle_json_report_parser_rejects_interesting_count_mismatch() {
+        let report = VALID_JSON_REPORT.replace(
+            r#""interesting_findings": 1"#,
+            r#""interesting_findings": 0"#,
+        );
+
+        let error = parse_oracle_json_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            OracleJsonReportError::InterestingFindingsMismatch {
+                expected: 1,
+                actual: 0
+            }
+        ));
+    }
+
+    #[test]
+    fn oracle_json_report_parser_rejects_unknown_fields() {
+        let report = VALID_JSON_REPORT.replace(
+            r#""interesting_findings": 1"#,
+            r#""interesting_findings": 1,
+  "unexpected": true"#,
+        );
+
+        let error = parse_oracle_json_report(&report).unwrap_err();
+
+        assert!(matches!(error, OracleJsonReportError::Decode(_)));
     }
 
     #[test]

@@ -1061,8 +1061,9 @@ fn test_oracle_report_with_dump_check() {
     assert!(content.contains("fsck_vs_checksum_repair_fsck: agree"));
     assert!(content.contains("interesting_findings: 0"));
 
-    let json: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(json_report).unwrap()).unwrap();
+    let json_content = fs::read_to_string(json_report).unwrap();
+    erofs_rs::oracle::parse_oracle_json_report(&json_content).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&json_content).unwrap();
     assert_eq!(json["schema"], "erofs-rs.oracle-report.v1");
     assert_eq!(json["checks"].as_array().unwrap().len(), 7);
     assert_eq!(json["matrix"].as_array().unwrap().len(), 21);

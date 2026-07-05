@@ -104,6 +104,24 @@ Campaign-level files:
 Use `erofs-rs triage` to merge multiple `fuzz-buckets.json` files into an
 `erofs-rs.bucket-db.v1` bucket database.
 
+## Oracle JSON Report
+
+Userspace oracle reports use the `erofs-rs.oracle-report.v1` schema. Generate
+one with:
+
+```bash
+erofs-rs oracle \
+    --input corpus/seeds/single.erofs \
+    --fsck build/erofs-utils/fsck/fsck.erofs \
+    --json-report build/oracle-report.json
+```
+
+The report stores the input path, individual check verdicts, pairwise matrix
+rows, and the number of disagreeing rows. The Rust library parser rejects
+unknown schemas, unknown fields, empty required fields, invalid status or
+verdict values, inconsistent `disagrees` flags, and mismatched
+`interesting_findings` counts.
+
 ## Kernel Replay Report
 
 Kernel replay reports use the `erofs-rs.kernel-replay.v1` schema. Generate one
