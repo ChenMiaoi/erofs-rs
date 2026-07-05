@@ -195,7 +195,19 @@ fn validate_root_inode_tolerant(image: &Image, sb: &Superblock) -> Option<ParseE
         ));
     }
 
-    None
+    match is_directory_inode(image, root_offset) {
+        Ok(true) => None,
+        Ok(false) => Some(ParseError::new(
+            ParseStage::Inode,
+            Some(root_offset),
+            "root inode is not a directory",
+        )),
+        Err(error) => Some(ParseError::new(
+            ParseStage::Inode,
+            Some(root_offset),
+            format!("failed to classify root inode: {error}"),
+        )),
+    }
 }
 
 fn locate_dirents_tolerant(
