@@ -78,6 +78,24 @@ pub struct CorpusArgs {
     pub output_dir: String,
     #[arg(long, help = "Summary report file")]
     pub report: String,
+    #[arg(
+        long,
+        value_enum,
+        default_value = "hash",
+        help = "Corpus collection mode: hash, coverage, classification"
+    )]
+    pub mode: CorpusMode,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum CorpusMode {
+    /// Deduplicate manifest artifacts by full SHA-256 before classification.
+    #[default]
+    Hash,
+    /// Collect already coverage-minimized engine corpus units by full SHA-256.
+    Coverage,
+    /// Preserve every manifest artifact while grouping by classification.
+    Classification,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]

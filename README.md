@@ -137,6 +137,14 @@ erofs-rs corpus \
     --report /tmp/artifacts/report.txt
 ```
 
+`corpus` defaults to `--mode hash`, which reads mutation manifests, deduplicates
+by full SHA-256, and writes artifacts into fsck classification directories. Use
+`--mode classification` to preserve every manifest-listed artifact while still
+grouping by classification. Use `--mode coverage` for inputs that have already
+been selected by a coverage-guided engine such as `cargo fuzz cmin`; it writes
+unique units under `coverage-interesting/` and reports total files, unique
+hashes, coverage-interesting units, crashes, and timeouts.
+
 ### `fuzz` – mutation-based fuzzing
 
 ```bash
@@ -311,7 +319,8 @@ CI is split by cost and feedback speed:
   matrix, runs
   structured mutations, classifies artifacts, builds the upstream libFuzzer
   target, runs a short fuzzing session, runs the Rust-native libFuzzer targets
-  and `cargo fuzz cmin` corpus minimization, builds ASAN/UBSAN-instrumented
+  and `cargo fuzz cmin` corpus minimization, collects the minimized Rust fuzz
+  corpus with `erofs-rs corpus --mode coverage`, builds ASAN/UBSAN-instrumented
   `erofs-utils`, scans seeds and generated artifacts for tool crashes,
   timeouts, and sanitizer diagnostics, and uploads reports, minimized corpora,
   logs, and manifests.

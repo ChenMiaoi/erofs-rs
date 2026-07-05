@@ -450,10 +450,82 @@ fn test_corpus_manager() {
         input_dir: mutated.to_string_lossy().to_string(),
         output_dir: artifacts.to_string_lossy().to_string(),
         report: report.to_string_lossy().to_string(),
+        mode: erofs_rs::cli::CorpusMode::Hash,
     };
     erofs_rs::corpus::run(&args).unwrap();
 
     assert!(report.exists());
+}
+
+#[test]
+fn test_corpus_classification_mode_preserves_duplicates() {
+    let tmp = TempDir::new().unwrap();
+    let mutated = tmp.path().join("mutated");
+    let artifacts = tmp.path().join("artifacts");
+    let report = tmp.path().join("report.txt");
+    fs::create_dir(&mutated).unwrap();
+
+    fs::write(mutated.join("a.erofs"), b"same").unwrap();
+    fs::write(mutated.join("b.erofs"), b"same").unwrap();
+    fs::write(
+        mutated.join("manifest.txt"),
+        "a.erofs magic zero 0x00000000 rejected_crash signal\n\
+         b.erofs magic zero 0x00000000 rejected_crash signal\n",
+    )
+    .unwrap();
+
+    let args = erofs_rs::cli::CorpusArgs {
+        input_dir: mutated.to_string_lossy().to_string(),
+        output_dir: artifacts.to_string_lossy().to_string(),
+        report: report.to_string_lossy().to_string(),
+        mode: erofs_rs::cli::CorpusMode::Classification,
+    };
+    erofs_rs::corpus::run(&args).unwrap();
+
+    let content = fs::read_to_string(&report).unwrap();
+    assert!(content.contains("Mode: classification"));
+    assert!(content.contains("Collected artifacts: 2"));
+    assert!(content.contains("Unique hashes: 1"));
+    assert!(content.contains("Crashes: 2"));
+    assert_eq!(
+        fs::read_dir(artifacts.join("rejected_crash"))
+            .unwrap()
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn test_corpus_coverage_mode_collects_minimized_units() {
+    let tmp = TempDir::new().unwrap();
+    let corpus = tmp.path().join("coverage");
+    let artifacts = tmp.path().join("artifacts");
+    let report = tmp.path().join("report.txt");
+    fs::create_dir(&corpus).unwrap();
+
+    fs::write(corpus.join("unit-a"), b"coverage-a").unwrap();
+    fs::write(corpus.join("unit-b"), b"coverage-a").unwrap();
+    fs::write(corpus.join("run.log"), b"not corpus").unwrap();
+
+    let args = erofs_rs::cli::CorpusArgs {
+        input_dir: corpus.to_string_lossy().to_string(),
+        output_dir: artifacts.to_string_lossy().to_string(),
+        report: report.to_string_lossy().to_string(),
+        mode: erofs_rs::cli::CorpusMode::Coverage,
+    };
+    erofs_rs::corpus::run(&args).unwrap();
+
+    let content = fs::read_to_string(&report).unwrap();
+    assert!(content.contains("Mode: coverage"));
+    assert!(content.contains("Total files: 2"));
+    assert!(content.contains("Unique hashes: 1"));
+    assert!(content.contains("Coverage-interesting units: 1"));
+    assert_eq!(
+        fs::read_dir(artifacts.join("coverage-interesting"))
+            .unwrap()
+            .count(),
+        1
+    );
 }
 
 #[test]

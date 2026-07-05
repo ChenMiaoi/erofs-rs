@@ -91,6 +91,7 @@ jobs:
       - name: Collect artifact corpus
         run: |
           ./target/release/erofs-rs corpus \
+            --mode hash \
             --input-dir corpus/mutated/ \
             --output-dir corpus/artifacts/ \
             --report corpus/artifacts/report.txt
@@ -132,6 +133,14 @@ jobs:
               2>&1 | tee "corpus/rust-fuzz/${target}/cmin.log"
           done
 
+      - name: Collect minimized Rust fuzz corpus
+        run: |
+          ./target/release/erofs-rs corpus \
+            --mode coverage \
+            --input-dir corpus/rust-fuzz/ \
+            --output-dir corpus/minimized/rust-fuzz/ \
+            --report corpus/minimized/rust-fuzz/report.txt
+
       - name: Build sanitizer erofs-utils
         run: ./scripts/build-erofs-utils-sanitized.sh
 
@@ -155,6 +164,7 @@ jobs:
           path: |
             corpus/artifacts/
             corpus/fuzz-out/
+            corpus/minimized/
             corpus/rust-fuzz/
             corpus/seeds/matrix/manifest.json
             corpus/erofs-utils-safety/
