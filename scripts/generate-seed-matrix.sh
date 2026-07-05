@@ -175,6 +175,22 @@ make_long_xattr_prefix_root() {
         2>/dev/null
 }
 
+make_shared_xattr_root() {
+    local root="$1"
+    mkdir -p "$root"
+    printf 'shared xattr matrix a\n' > "$root/shared-a.txt"
+    printf 'shared xattr matrix b\n' > "$root/shared-b.txt"
+    if ! command -v setfattr >/dev/null 2>&1; then
+        return 1
+    fi
+    for file in "$root/shared-a.txt" "$root/shared-b.txt"; do
+        setfattr -n user.matrix.shared -v "shared-value" "$file" \
+            2>/dev/null || return 1
+        setfattr -n user.matrix.shared_prefix -v "shared-prefix-value" "$file" \
+            2>/dev/null || return 1
+    done
+}
+
 make_acl_root() {
     local root="$1"
     mkdir -p "$root"
@@ -307,6 +323,17 @@ if make_long_xattr_prefix_root "$tmp"; then
 else
     echo "WARN: skipped xattr-long-prefix-4k (setfattr unavailable or long-prefix xattr failed)" \
         >&2
+fi
+rm -rf "$tmp"
+
+tmp="$(mktemp -d)"
+if make_shared_xattr_root "$tmp"; then
+    run_mkfs "xattr-shared-4k" "$tmp" "xattr_shared" \
+        "best_effort" \
+        "block_size:4096,compression:none,xattrs:user,xattrs:shared,layout:plain,dir_size:small" \
+        "-b4096"
+else
+    echo "WARN: skipped xattr-shared-4k (setfattr unavailable or shared xattr failed)" >&2
 fi
 rm -rf "$tmp"
 

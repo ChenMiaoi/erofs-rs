@@ -345,7 +345,7 @@ the weekly `corpus/rust-fuzz/<target>/` layout.
 
 The basic and complex seed scripts create a small hand-written corpus. For
 feature coverage, `generate-seed-matrix.sh` builds a reproducible matrix with
-block-size, compression, user-xattr, long xattr prefix, POSIX ACL,
+block-size, compression, user-xattr, shared xattr, long xattr prefix, POSIX ACL,
 large-directory, special-file, socket, device-node, chunked-file, and
 packed-fragment variants when the host tools can create them:
 
