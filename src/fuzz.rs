@@ -2,6 +2,7 @@ use crate::checksum::fix_checksum;
 use crate::cli::{FuzzArgs, FuzzStrategy};
 use crate::fsck::{ExecLimits, run_fsck_with_limits};
 use crate::image::{EROFS_SUPER_OFFSET, FieldWidth, Image, read_image, write_image};
+use crate::triage::parse_fuzz_bucket_report;
 use anyhow::{Result, bail};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -844,6 +845,8 @@ fn write_fuzz_bucket_report(path: &Path, summary: &FuzzSummary) -> Result<()> {
     let report = build_fuzz_bucket_report(summary);
     let json = serde_json::to_string_pretty(&report)
         .map_err(|e| anyhow::anyhow!("failed to serialize fuzz bucket report: {e}"))?;
+    parse_fuzz_bucket_report(&json)
+        .map_err(|error| anyhow::anyhow!("generated fuzz bucket report is invalid: {error}"))?;
     fs::write(path, json + "\n")
         .map_err(|e| anyhow::anyhow!("failed to write fuzz bucket report {}: {e}", path.display()))
 }
@@ -1101,6 +1104,7 @@ mod tests {
     };
     use crate::cli::{FuzzArgs, FuzzStrategy};
     use crate::image::{FieldWidth, Image};
+    use crate::triage::parse_fuzz_bucket_report;
     use std::path::Path;
     use std::time::Duration;
     use tempfile::TempDir;
@@ -1451,8 +1455,9 @@ mod tests {
         assert!(report.contains("- accepted_with_errors: reason: 2"));
         assert!(!report.contains("- rejected_invalid: reason"));
 
-        let bucket_report: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(bucket_report_path).unwrap()).unwrap();
+        let bucket_content = std::fs::read_to_string(bucket_report_path).unwrap();
+        parse_fuzz_bucket_report(&bucket_content).unwrap();
+        let bucket_report: serde_json::Value = serde_json::from_str(&bucket_content).unwrap();
         assert_eq!(bucket_report["schema"], FUZZ_BUCKET_REPORT_SCHEMA);
         assert_eq!(bucket_report["rng_seed"].as_u64(), Some(123));
         assert_eq!(bucket_report["actionable_findings"].as_u64(), Some(2));
