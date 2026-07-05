@@ -12,6 +12,59 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OutcomeKind {
+    NormalAccept,
+    ExpectedReject,
+    InterestingSemantic,
+    UnsafeCrash,
+    UnsafeTimeout,
+    ToolingError,
+}
+
+impl OutcomeKind {
+    fn from_classification(classification: &str) -> Self {
+        match classification {
+            "accepted" => Self::NormalAccept,
+            "rejected_checksum"
+            | "rejected_corruption"
+            | "rejected_invalid"
+            | "rejected_io_error" => Self::ExpectedReject,
+            "accepted_with_errors" | "rejected_other" => Self::InterestingSemantic,
+            "rejected_timeout" => Self::UnsafeTimeout,
+            classification
+                if classification.contains("crash")
+                    || classification.contains("signal")
+                    || classification.contains("sanitizer") =>
+            {
+                Self::UnsafeCrash
+            }
+            _ => Self::ToolingError,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::NormalAccept => "normal_accept",
+            Self::ExpectedReject => "expected_reject",
+            Self::InterestingSemantic => "interesting_semantic",
+            Self::UnsafeCrash => "unsafe_crash",
+            Self::UnsafeTimeout => "unsafe_timeout",
+            Self::ToolingError => "tooling_error",
+        }
+    }
+
+    fn is_finding(self) -> bool {
+        matches!(
+            self,
+            Self::InterestingSemantic
+                | Self::UnsafeCrash
+                | Self::UnsafeTimeout
+                | Self::ToolingError
+        )
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct FuzzRun {
     pub(crate) iteration: u64,
@@ -21,12 +74,16 @@ pub(crate) struct FuzzRun {
 }
 
 impl FuzzRun {
+    fn outcome_kind(&self) -> OutcomeKind {
+        OutcomeKind::from_classification(&self.classification)
+    }
+
     fn is_clean_accept(&self) -> bool {
-        self.classification == "accepted"
+        self.outcome_kind() == OutcomeKind::NormalAccept
     }
 
     fn is_finding(&self) -> bool {
-        !self.is_clean_accept()
+        self.outcome_kind().is_finding()
     }
 }
 
@@ -47,6 +104,37 @@ impl FuzzSummary {
 
     fn clean_accept_count(&self) -> usize {
         self.runs.iter().filter(|run| run.is_clean_accept()).count()
+    }
+
+    fn expected_reject_count(&self) -> usize {
+        self.outcome_count(OutcomeKind::ExpectedReject)
+    }
+
+    fn interesting_finding_count(&self) -> usize {
+        self.outcome_count(OutcomeKind::InterestingSemantic)
+    }
+
+    fn unsafe_finding_count(&self) -> usize {
+        self.runs
+            .iter()
+            .filter(|run| {
+                matches!(
+                    run.outcome_kind(),
+                    OutcomeKind::UnsafeCrash | OutcomeKind::UnsafeTimeout
+                )
+            })
+            .count()
+    }
+
+    fn tooling_error_count(&self) -> usize {
+        self.outcome_count(OutcomeKind::ToolingError)
+    }
+
+    fn outcome_count(&self, outcome: OutcomeKind) -> usize {
+        self.runs
+            .iter()
+            .filter(|run| run.outcome_kind() == outcome)
+            .count()
     }
 }
 
@@ -186,12 +274,40 @@ fn write_fuzz_report(summary: &FuzzSummary) -> Result<()> {
         format!("Duration: {:.2}s", summary.duration.as_secs_f64()),
         format!("Total iterations: {}", summary.iterations),
         format!("Unique images observed: {}", summary.runs.len()),
-        format!("Fsck findings: {}", summary.finding_count()),
+        format!("Actionable findings: {}", summary.finding_count()),
+        format!(
+            "Interesting findings: {}",
+            summary.interesting_finding_count()
+        ),
+        format!("Unsafe findings: {}", summary.unsafe_finding_count()),
+        format!("Expected rejects: {}", summary.expected_reject_count()),
+        format!("Tooling errors: {}", summary.tooling_error_count()),
         format!("Clean accepts: {}", summary.clean_accept_count()),
+        String::new(),
+        "## Outcome Summary".to_string(),
+        String::new(),
+    ];
+
+    for outcome in [
+        OutcomeKind::NormalAccept,
+        OutcomeKind::ExpectedReject,
+        OutcomeKind::InterestingSemantic,
+        OutcomeKind::UnsafeCrash,
+        OutcomeKind::UnsafeTimeout,
+        OutcomeKind::ToolingError,
+    ] {
+        lines.push(format!(
+            "- {}: {}",
+            outcome.label(),
+            summary.outcome_count(outcome)
+        ));
+    }
+
+    lines.extend([
         String::new(),
         "## Classification Summary".to_string(),
         String::new(),
-    ];
+    ]);
 
     let mut sorted: Vec<_> = counts.iter().collect();
     sorted.sort_by(|a, b| b.1.cmp(a.1));
@@ -302,7 +418,9 @@ fn run_mutation_fuzz(args: &FuzzArgs) -> Result<()> {
     println!("\nFuzzing complete.");
     println!("  Iterations: {}", summary.iterations);
     println!("  Unique images: {}", summary.runs.len());
-    println!("  Fsck findings: {}", summary.finding_count());
+    println!("  Actionable findings: {}", summary.finding_count());
+    println!("  Expected rejects: {}", summary.expected_reject_count());
+    println!("  Unsafe findings: {}", summary.unsafe_finding_count());
     println!("  Report: {}", summary.report_path);
 
     if should_show_tui(args) {
@@ -316,7 +434,7 @@ fn run_mutation_fuzz(args: &FuzzArgs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{FuzzRun, FuzzSummary};
+    use super::{FuzzRun, FuzzSummary, OutcomeKind};
     use std::time::Duration;
 
     fn run(classification: &str) -> FuzzRun {
@@ -340,15 +458,63 @@ mod tests {
     }
 
     #[test]
-    fn finding_count_excludes_only_clean_accepts() {
+    fn outcome_kind_maps_current_fsck_classifications() {
+        assert_eq!(
+            OutcomeKind::from_classification("accepted"),
+            OutcomeKind::NormalAccept
+        );
+        assert_eq!(
+            OutcomeKind::from_classification("rejected_checksum"),
+            OutcomeKind::ExpectedReject
+        );
+        assert_eq!(
+            OutcomeKind::from_classification("rejected_invalid"),
+            OutcomeKind::ExpectedReject
+        );
+        assert_eq!(
+            OutcomeKind::from_classification("rejected_corruption"),
+            OutcomeKind::ExpectedReject
+        );
+        assert_eq!(
+            OutcomeKind::from_classification("rejected_io_error"),
+            OutcomeKind::ExpectedReject
+        );
+        assert_eq!(
+            OutcomeKind::from_classification("accepted_with_errors"),
+            OutcomeKind::InterestingSemantic
+        );
+        assert_eq!(
+            OutcomeKind::from_classification("rejected_other"),
+            OutcomeKind::InterestingSemantic
+        );
+        assert_eq!(
+            OutcomeKind::from_classification("rejected_timeout"),
+            OutcomeKind::UnsafeTimeout
+        );
+        assert_eq!(
+            OutcomeKind::from_classification("sanitizer_crash"),
+            OutcomeKind::UnsafeCrash
+        );
+        assert_eq!(
+            OutcomeKind::from_classification("tool_failed"),
+            OutcomeKind::ToolingError
+        );
+    }
+
+    #[test]
+    fn finding_count_excludes_expected_rejects() {
         let summary = summary(vec![
             run("accepted"),
             run("accepted_with_errors"),
             run("rejected_checksum"),
+            run("rejected_invalid"),
             run("rejected_timeout"),
         ]);
 
-        assert_eq!(summary.finding_count(), 3);
+        assert_eq!(summary.finding_count(), 2);
         assert_eq!(summary.clean_accept_count(), 1);
+        assert_eq!(summary.expected_reject_count(), 2);
+        assert_eq!(summary.interesting_finding_count(), 1);
+        assert_eq!(summary.unsafe_finding_count(), 1);
     }
 }
