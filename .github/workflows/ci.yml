@@ -73,6 +73,7 @@ jobs:
           cargo +nightly fuzz run xattr_parse -- -runs=1000
           cargo +nightly fuzz run chunk_parse -- -runs=1000
           cargo +nightly fuzz run compression_parse -- -runs=1000
+          cargo +nightly fuzz run parser_differential -- -runs=1000
 
   userspace-integration:
     name: Userspace fsck and fuzz smoke

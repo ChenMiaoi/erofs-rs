@@ -127,6 +127,7 @@ jobs:
             xattr_parse
             chunk_parse
             compression_parse
+            parser_differential
           )
           for target in "${targets[@]}"; do
             corpus_dir="corpus/rust-fuzz/${target}/corpus"

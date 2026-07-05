@@ -75,3 +75,10 @@ path = "fuzz_targets/compression_parse.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "parser_differential"
+path = "fuzz_targets/parser_differential.rs"
+test = false
+doc = false
+bench = false
