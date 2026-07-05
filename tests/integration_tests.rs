@@ -320,6 +320,32 @@ fn test_inject_field() {
 }
 
 #[test]
+fn test_inject_late_superblock_field() {
+    let tmp = TempDir::new().unwrap();
+    let output = tmp.path().join("out.erofs");
+
+    let args = erofs_rs::cli::InjectArgs {
+        input: fixture("single.erofs").to_string_lossy().to_string(),
+        output: output.to_string_lossy().to_string(),
+        field: Some("superblock.feature_incompat".to_string()),
+        target: None,
+        offset: None,
+        width: None,
+        value: "0x80".to_string(),
+        fix_checksum: true,
+        manifest: None,
+    };
+    erofs_rs::inject::run(&args).unwrap();
+
+    let img = read_image(&output).unwrap();
+    assert_eq!(
+        img.read_field(EROFS_SUPER_OFFSET + 0x50, FieldWidth::U32)
+            .unwrap(),
+        0x80
+    );
+}
+
+#[test]
 fn test_inject_offset() {
     let tmp = TempDir::new().unwrap();
     let output = tmp.path().join("out.erofs");

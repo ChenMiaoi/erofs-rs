@@ -90,6 +90,27 @@ const SUPERBLOCK_FIELDS: &[MutationDef] = &[
         ],
     },
     MutationDef {
+        field_offset: 0x18,
+        width: FieldWidth::U64,
+        field_name: "epoch",
+        values: &[
+            (0x0000000000000000, "zero"),
+            (0x0000000000000001, "one"),
+            (0xFFFFFFFFFFFFFFFF, "max"),
+        ],
+    },
+    MutationDef {
+        field_offset: 0x20,
+        width: FieldWidth::U32,
+        field_name: "fixed_nsec",
+        values: &[
+            (0x00000000, "zero"),
+            (0x3B9AC9FF, "max_valid_nsec"),
+            (0x3B9ACA00, "one_billion"),
+            (0xFFFFFFFF, "max"),
+        ],
+    },
+    MutationDef {
         field_offset: 0x24,
         width: FieldWidth::U32,
         field_name: "blocks_lo",
@@ -114,6 +135,166 @@ const SUPERBLOCK_FIELDS: &[MutationDef] = &[
         width: FieldWidth::U32,
         field_name: "xattr_blkaddr",
         values: &[(0x00000001, "point_to_data"), (0xFFFFFFFF, "max")],
+    },
+    MutationDef {
+        field_offset: 0x30,
+        width: FieldWidth::U64,
+        field_name: "uuid_lo",
+        values: &[(0x0000000000000000, "zero"), (0xFFFFFFFFFFFFFFFF, "max")],
+    },
+    MutationDef {
+        field_offset: 0x38,
+        width: FieldWidth::U64,
+        field_name: "uuid_hi",
+        values: &[(0x0000000000000000, "zero"), (0xFFFFFFFFFFFFFFFF, "max")],
+    },
+    MutationDef {
+        field_offset: 0x40,
+        width: FieldWidth::U64,
+        field_name: "volume_name_lo",
+        values: &[(0x0000000000000000, "zero"), (0xFFFFFFFFFFFFFFFF, "max")],
+    },
+    MutationDef {
+        field_offset: 0x48,
+        width: FieldWidth::U64,
+        field_name: "volume_name_hi",
+        values: &[(0x0000000000000000, "zero"), (0xFFFFFFFFFFFFFFFF, "max")],
+    },
+    MutationDef {
+        field_offset: 0x50,
+        width: FieldWidth::U32,
+        field_name: "feature_incompat",
+        values: &[
+            (0x00000000, "clear_all"),
+            (0x00000004, "chunked_file"),
+            (0x00000008, "device_or_compr_head2"),
+            (0x00000020, "fragments_or_dedupe"),
+            (0x00000040, "xattr_prefixes"),
+            (0x00000080, "48bit"),
+            (0x00000100, "metabox"),
+            (0x00000200, "unknown_bit"),
+            (0xFFFFFFFF, "all_ones"),
+        ],
+    },
+    MutationDef {
+        field_offset: 0x54,
+        width: FieldWidth::U16,
+        field_name: "available_compr_algs",
+        values: &[
+            (0x0000, "zero"),
+            (0x0001, "lz4"),
+            (0x0002, "secondary"),
+            (0xFFFF, "max"),
+        ],
+    },
+    MutationDef {
+        field_offset: 0x56,
+        width: FieldWidth::U16,
+        field_name: "extra_devices",
+        values: &[(0x0000, "zero"), (0x0001, "one"), (0xFFFF, "max")],
+    },
+    MutationDef {
+        field_offset: 0x58,
+        width: FieldWidth::U16,
+        field_name: "devt_slotoff",
+        values: &[(0x0000, "zero"), (0x0001, "one"), (0xFFFF, "max")],
+    },
+    MutationDef {
+        field_offset: 0x5A,
+        width: FieldWidth::U8,
+        field_name: "dirblkbits",
+        values: &[
+            (0x00, "zero"),
+            (0x01, "one"),
+            (0x0C, "block_bits"),
+            (0xFF, "max"),
+        ],
+    },
+    MutationDef {
+        field_offset: 0x5B,
+        width: FieldWidth::U8,
+        field_name: "xattr_prefix_count",
+        values: &[(0x00, "zero"), (0x01, "one"), (0xFF, "max")],
+    },
+    MutationDef {
+        field_offset: 0x5C,
+        width: FieldWidth::U32,
+        field_name: "xattr_prefix_start",
+        values: &[
+            (0x00000000, "zero"),
+            (0x00000001, "one"),
+            (0xFFFFFFFF, "max"),
+        ],
+    },
+    MutationDef {
+        field_offset: 0x60,
+        width: FieldWidth::U64,
+        field_name: "packed_nid",
+        values: &[
+            (0x0000000000000000, "zero"),
+            (0x0000000000000001, "one"),
+            (0xFFFFFFFFFFFFFFFF, "max"),
+        ],
+    },
+    MutationDef {
+        field_offset: 0x68,
+        width: FieldWidth::U8,
+        field_name: "xattr_filter_reserved",
+        values: &[(0x00, "zero"), (0x01, "one"), (0xFF, "max")],
+    },
+    MutationDef {
+        field_offset: 0x69,
+        width: FieldWidth::U8,
+        field_name: "ishare_xattr_prefix_id",
+        values: &[(0x00, "zero"), (0x01, "one"), (0xFF, "max")],
+    },
+    MutationDef {
+        field_offset: 0x6A,
+        width: FieldWidth::U16,
+        field_name: "reserved",
+        values: &[(0x0000, "zero"), (0xFFFF, "max")],
+    },
+    MutationDef {
+        field_offset: 0x6C,
+        width: FieldWidth::U32,
+        field_name: "build_time",
+        values: &[
+            (0x00000000, "zero"),
+            (0x00000001, "one"),
+            (0xFFFFFFFF, "max"),
+        ],
+    },
+    MutationDef {
+        field_offset: 0x70,
+        width: FieldWidth::U64,
+        field_name: "root_nid_8b",
+        values: &[
+            (0x0000000000000000, "zero"),
+            (0x0000000000000001, "one"),
+            (0xFFFFFFFFFFFFFFFF, "max"),
+        ],
+    },
+    MutationDef {
+        field_offset: 0x78,
+        width: FieldWidth::U64,
+        field_name: "reserved2",
+        values: &[(0x0000000000000000, "zero"), (0xFFFFFFFFFFFFFFFF, "max")],
+    },
+    MutationDef {
+        field_offset: 0x80,
+        width: FieldWidth::U64,
+        field_name: "metabox_nid",
+        values: &[
+            (0x0000000000000000, "zero"),
+            (0x0000000000000001, "one"),
+            (0xFFFFFFFFFFFFFFFF, "max"),
+        ],
+    },
+    MutationDef {
+        field_offset: 0x88,
+        width: FieldWidth::U64,
+        field_name: "reserved3",
+        values: &[(0x0000000000000000, "zero"), (0xFFFFFFFFFFFFFFFF, "max")],
     },
 ];
 
@@ -590,4 +771,44 @@ pub fn run(args: &MutateArgs) -> Result<()> {
     println!("  Manifest: {}", args.manifest);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SUPERBLOCK_FIELDS;
+
+    #[test]
+    fn superblock_mutations_cover_late_format_fields() {
+        let names: Vec<_> = SUPERBLOCK_FIELDS
+            .iter()
+            .map(|field| field.field_name)
+            .collect();
+
+        for expected in [
+            "epoch",
+            "fixed_nsec",
+            "uuid_lo",
+            "uuid_hi",
+            "volume_name_lo",
+            "volume_name_hi",
+            "feature_incompat",
+            "available_compr_algs",
+            "extra_devices",
+            "devt_slotoff",
+            "dirblkbits",
+            "xattr_prefix_count",
+            "xattr_prefix_start",
+            "packed_nid",
+            "xattr_filter_reserved",
+            "ishare_xattr_prefix_id",
+            "reserved",
+            "build_time",
+            "root_nid_8b",
+            "reserved2",
+            "metabox_nid",
+            "reserved3",
+        ] {
+            assert!(names.contains(&expected), "missing {expected}");
+        }
+    }
 }
