@@ -601,6 +601,29 @@ fn test_mutate_xattr() {
 }
 
 #[test]
+fn test_mutate_chunk() {
+    let tmp = TempDir::new().unwrap();
+    let out_dir = tmp.path().join("chunk");
+    let manifest = tmp.path().join("manifest.txt");
+
+    let args = erofs_rs::cli::MutateArgs {
+        input: fixture("single.erofs").to_string_lossy().to_string(),
+        output_dir: out_dir.to_string_lossy().to_string(),
+        manifest: manifest.to_string_lossy().to_string(),
+        fsck: fsck_path().to_string_lossy().to_string(),
+        target: "chunk".to_string(),
+        fix_checksum: true,
+    };
+    erofs_rs::mutate::run(&args).unwrap();
+
+    assert!(manifest.exists());
+    assert!(fs::read_dir(&out_dir).unwrap().count() > 0);
+    let content = fs::read_to_string(&manifest).unwrap();
+    assert!(content.contains("# Families: chunk="));
+    assert!(content.contains("reserved_nonzero"));
+}
+
+#[test]
 fn test_mutate_cross_fields() {
     let tmp = TempDir::new().unwrap();
     let out_dir = tmp.path().join("cross");
