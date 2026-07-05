@@ -74,6 +74,7 @@ struct FuzzArtifactSidecar {
     stderr_truncated: bool,
     classification: String,
     reason: String,
+    signature: String,
     stdout_path: String,
     stderr_path: String,
 }
@@ -137,6 +138,7 @@ pub(crate) struct FuzzRun {
     pub(crate) seed_name: String,
     pub(crate) classification: String,
     pub(crate) reason: String,
+    pub(crate) signature: String,
 }
 
 impl FuzzRun {
@@ -518,6 +520,7 @@ struct FuzzSidecarInput<'a> {
     stderr_truncated: bool,
     classification: &'a str,
     reason: &'a str,
+    signature: &'a str,
     stdout_path: &'a Path,
     stderr_path: &'a Path,
 }
@@ -550,8 +553,34 @@ fn build_fuzz_sidecar(input: FuzzSidecarInput<'_>) -> FuzzArtifactSidecar {
         stderr_truncated: input.stderr_truncated,
         classification: input.classification.to_string(),
         reason: input.reason.to_string(),
+        signature: input.signature.to_string(),
         stdout_path: input.stdout_path.display().to_string(),
         stderr_path: input.stderr_path.display().to_string(),
+    }
+}
+
+fn normalize_signature_detail(detail: &str) -> String {
+    const MAX_SIGNATURE_DETAIL_CHARS: usize = 160;
+    let normalized = detail.split_whitespace().collect::<Vec<_>>().join(" ");
+    normalized
+        .chars()
+        .take(MAX_SIGNATURE_DETAIL_CHARS)
+        .collect()
+}
+
+fn first_meaningful_line(text: &str) -> Option<&str> {
+    text.lines().map(str::trim).find(|line| !line.is_empty())
+}
+
+fn finding_signature(classification: &str, reason: &str, stdout: &str, stderr: &str) -> String {
+    let detail = first_meaningful_line(stderr)
+        .or_else(|| first_meaningful_line(stdout))
+        .unwrap_or(reason);
+    let detail = normalize_signature_detail(detail);
+    if detail.is_empty() {
+        classification.to_string()
+    } else {
+        format!("{classification}: {detail}")
     }
 }
 
@@ -569,8 +598,12 @@ fn write_fuzz_sidecar(path: &Path, sidecar: &FuzzArtifactSidecar) -> Result<()> 
 
 fn write_fuzz_report(summary: &FuzzSummary) -> Result<()> {
     let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut buckets: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for run in &summary.runs {
         *counts.entry(run.classification.clone()).or_insert(0) += 1;
+        if run.is_finding() {
+            *buckets.entry(run.signature.clone()).or_insert(0) += 1;
+        }
     }
 
     let mut lines = vec![
@@ -623,14 +656,30 @@ fn write_fuzz_report(summary: &FuzzSummary) -> Result<()> {
 
     lines.extend([
         String::new(),
+        "## Finding Buckets".to_string(),
+        String::new(),
+    ]);
+
+    let mut sorted_buckets: Vec<_> = buckets.iter().collect();
+    sorted_buckets.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+    if sorted_buckets.is_empty() {
+        lines.push("- none".to_string());
+    } else {
+        for (signature, count) in sorted_buckets {
+            lines.push(format!("- {signature}: {count}"));
+        }
+    }
+
+    lines.extend([
+        String::new(),
         "## Representative Runs".to_string(),
         String::new(),
     ]);
 
     for run in summary.runs.iter().take(100) {
         lines.push(format!(
-            "iter={:<8} seed={:<20} result={:<20} reason={}",
-            run.iteration, run.seed_name, run.classification, run.reason
+            "iter={:<8} seed={:<20} result={:<20} signature={} reason={}",
+            run.iteration, run.seed_name, run.classification, run.signature, run.reason
         ));
     }
 
@@ -705,6 +754,7 @@ fn run_mutation_fuzz(args: &FuzzArgs) -> Result<()> {
         let result = run_fsck_with_limits(&args.fsck, &artifact_path, &[], fsck_limits)?;
         let classification = result.classification.clone();
         let reason = result.reason.clone();
+        let signature = finding_signature(&classification, &reason, &result.stdout, &result.stderr);
 
         let stdout_path = artifact_text_path(&artifact_path, "stdout");
         let stderr_path = artifact_text_path(&artifact_path, "stderr");
@@ -729,6 +779,7 @@ fn run_mutation_fuzz(args: &FuzzArgs) -> Result<()> {
             stderr_truncated: result.stderr_truncated,
             classification: &classification,
             reason: &reason,
+            signature: &signature,
             stdout_path: &stdout_path,
             stderr_path: &stderr_path,
         });
@@ -739,6 +790,7 @@ fn run_mutation_fuzz(args: &FuzzArgs) -> Result<()> {
             seed_name: seed_name.clone(),
             classification: classification.clone(),
             reason: reason.clone(),
+            signature,
         });
 
         if iteration % 10 == 0 {
@@ -785,13 +837,14 @@ mod tests {
     use super::run as run_fuzz;
     use super::{
         DEFAULT_DUMP_PATH, FUZZ_ARTIFACT_SCHEMA, FuzzArtifactSidecar, FuzzRun, FuzzSidecarInput,
-        FuzzSummary, OutcomeKind, build_fuzz_sidecar, git_revision, mutation_record, sha256_hex,
-        strategy_name,
+        FuzzSummary, OutcomeKind, build_fuzz_sidecar, finding_signature, git_revision,
+        mutation_record, sha256_hex, strategy_name, write_fuzz_report,
     };
     use crate::cli::{FuzzArgs, FuzzStrategy};
     use crate::image::{FieldWidth, Image};
     use std::path::Path;
     use std::time::Duration;
+    use tempfile::TempDir;
 
     fn run(classification: &str) -> FuzzRun {
         FuzzRun {
@@ -799,6 +852,7 @@ mod tests {
             seed_name: "seed".to_string(),
             classification: classification.to_string(),
             reason: "reason".to_string(),
+            signature: format!("{classification}: reason"),
         }
     }
 
@@ -869,6 +923,7 @@ mod tests {
             stderr_truncated: true,
             classification: "rejected_invalid",
             reason: "fsck rejected as invalid",
+            signature: "rejected_invalid: bad inode",
             stdout_path,
             stderr_path,
         });
@@ -885,7 +940,27 @@ mod tests {
         assert!(!decoded.fsck_killed_process_group);
         assert_eq!(decoded.fsck_rss_limit_mb, Some(64));
         assert!(decoded.stderr_truncated);
+        assert_eq!(decoded.signature, "rejected_invalid: bad inode");
         assert_eq!(decoded.mutations[0].old.as_deref(), Some("0x00"));
+    }
+
+    #[test]
+    fn finding_signature_prefers_stderr_and_normalizes() {
+        let signature = finding_signature(
+            "rejected_crash",
+            "tool crashed",
+            "stdout detail",
+            "\n  kernel  BUG   at inode.c:10  \n",
+        );
+
+        assert_eq!(signature, "rejected_crash: kernel BUG at inode.c:10");
+    }
+
+    #[test]
+    fn finding_signature_falls_back_to_reason() {
+        let signature = finding_signature("rejected_timeout", "tool timed out", "", "");
+
+        assert_eq!(signature, "rejected_timeout: tool timed out");
     }
 
     #[test]
@@ -982,5 +1057,24 @@ mod tests {
         assert_eq!(summary.expected_reject_count(), 2);
         assert_eq!(summary.interesting_finding_count(), 1);
         assert_eq!(summary.unsafe_finding_count(), 1);
+    }
+
+    #[test]
+    fn fuzz_report_groups_findings_by_signature() {
+        let tmp = TempDir::new().unwrap();
+        let report_path = tmp.path().join("fuzz-report.txt");
+        let mut summary = summary(vec![
+            run("accepted_with_errors"),
+            run("accepted_with_errors"),
+            run("rejected_invalid"),
+        ]);
+        summary.report_path = report_path.display().to_string();
+
+        write_fuzz_report(&summary).unwrap();
+
+        let report = std::fs::read_to_string(report_path).unwrap();
+        assert!(report.contains("## Finding Buckets"));
+        assert!(report.contains("- accepted_with_errors: reason: 2"));
+        assert!(!report.contains("- rejected_invalid: reason"));
     }
 }
