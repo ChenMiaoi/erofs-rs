@@ -122,6 +122,14 @@ pub enum OracleJsonReportError {
         expected: String,
         actual: String,
     },
+    #[error(
+        "oracle JSON report check {check} has status {status} with classification {classification}"
+    )]
+    CheckStatusClassificationMismatch {
+        check: String,
+        status: String,
+        classification: String,
+    },
     #[error("oracle JSON report interesting_findings is {actual}, expected {expected}")]
     InterestingFindingsMismatch { expected: usize, actual: usize },
 }
@@ -331,6 +339,15 @@ fn validate_json_check(check: &OracleJsonCheck) -> std::result::Result<(), Oracl
     require_status("checks.status", &check.status)?;
     require_nonempty("checks.classification", &check.classification)?;
     require_nonempty("checks.reason", &check.reason)?;
+    let classification_is_skipped = check.classification == "skipped";
+    let status_is_skipped = check.status == "skipped";
+    if classification_is_skipped != status_is_skipped {
+        return Err(OracleJsonReportError::CheckStatusClassificationMismatch {
+            check: check.name.clone(),
+            status: check.status.clone(),
+            classification: check.classification.clone(),
+        });
+    }
     Ok(())
 }
 
@@ -936,6 +953,46 @@ mod tests {
                 field: "checks.status",
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn oracle_json_report_parser_rejects_skipped_status_classification_mismatch() {
+        let mut report: serde_json::Value = serde_json::from_str(VALID_JSON_REPORT).unwrap();
+        report["checks"][0]["status"] = serde_json::json!("skipped");
+        let report = serde_json::to_string(&report).unwrap();
+
+        let error = parse_oracle_json_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            OracleJsonReportError::CheckStatusClassificationMismatch {
+                check,
+                status,
+                classification,
+            } if check == "rust_parser"
+                && status == "skipped"
+                && classification == "accepted"
+        ));
+    }
+
+    #[test]
+    fn oracle_json_report_parser_rejects_skipped_classification_status_mismatch() {
+        let mut report: serde_json::Value = serde_json::from_str(VALID_JSON_REPORT).unwrap();
+        report["checks"][0]["classification"] = serde_json::json!("skipped");
+        let report = serde_json::to_string(&report).unwrap();
+
+        let error = parse_oracle_json_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            OracleJsonReportError::CheckStatusClassificationMismatch {
+                check,
+                status,
+                classification,
+            } if check == "rust_parser"
+                && status == "accepted"
+                && classification == "skipped"
         ));
     }
 
