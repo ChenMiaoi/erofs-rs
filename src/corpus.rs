@@ -427,6 +427,14 @@ pub struct CminSummaryReport {
     pub run_flags: Vec<String>,
     pub cmin_flags: Vec<String>,
     pub regression_flags: Vec<String>,
+    #[serde(default)]
+    pub total_before_cmin_units: Option<usize>,
+    #[serde(default)]
+    pub total_after_cmin_units: Option<usize>,
+    #[serde(default)]
+    pub total_removed_units: Option<usize>,
+    #[serde(default)]
+    pub total_artifact_count: Option<usize>,
     pub targets: Vec<CminTargetSummary>,
 }
 
@@ -473,6 +481,16 @@ pub enum CminSummaryError {
         expected: String,
         actual: String,
     },
+    #[error("cmin summary count {0} is missing")]
+    MissingCount(&'static str),
+    #[error("cmin summary count mismatch for {field}: expected {expected}, actual {actual}")]
+    CountMismatch {
+        field: &'static str,
+        expected: usize,
+        actual: usize,
+    },
+    #[error("cmin summary count overflow for {0}")]
+    CountOverflow(&'static str),
     #[error("cmin summary contains duplicate target: {0}")]
     DuplicateTarget(String),
 }
@@ -509,6 +527,34 @@ pub fn validate_cmin_summary_report(
             return Err(CminSummaryError::DuplicateTarget(target.target.clone()));
         }
     }
+
+    let total_before = cmin_count_sum(
+        "total_before_cmin_units",
+        report.targets.iter().map(|target| target.before_cmin_units),
+    )?;
+    let total_after = cmin_count_sum(
+        "total_after_cmin_units",
+        report.targets.iter().map(|target| target.after_cmin_units),
+    )?;
+    let total_removed =
+        total_before
+            .checked_sub(total_after)
+            .ok_or(CminSummaryError::CountMismatch {
+                field: "total_removed_units",
+                expected: total_before,
+                actual: total_after,
+            })?;
+    let total_artifacts = cmin_count_sum(
+        "total_artifact_count",
+        report.targets.iter().map(|target| target.artifact_count),
+    )?;
+    validate_cmin_optional_totals(
+        report,
+        total_before,
+        total_after,
+        total_removed,
+        total_artifacts,
+    )?;
 
     Ok(())
 }
@@ -595,6 +641,80 @@ fn require_cmin_path(
 
 fn cmin_target_path(target: &str, leaf: &str) -> String {
     portable_path(&Path::new(RUST_FUZZ_CORPUS_ROOT).join(target).join(leaf))
+}
+
+fn validate_cmin_optional_totals(
+    report: &CminSummaryReport,
+    total_before: usize,
+    total_after: usize,
+    total_removed: usize,
+    total_artifacts: usize,
+) -> std::result::Result<(), CminSummaryError> {
+    let totals_present = report.total_before_cmin_units.is_some()
+        || report.total_after_cmin_units.is_some()
+        || report.total_removed_units.is_some()
+        || report.total_artifact_count.is_some();
+    if !totals_present {
+        return Ok(());
+    }
+
+    require_cmin_count(
+        "total_before_cmin_units",
+        total_before,
+        report
+            .total_before_cmin_units
+            .ok_or(CminSummaryError::MissingCount("total_before_cmin_units"))?,
+    )?;
+    require_cmin_count(
+        "total_after_cmin_units",
+        total_after,
+        report
+            .total_after_cmin_units
+            .ok_or(CminSummaryError::MissingCount("total_after_cmin_units"))?,
+    )?;
+    require_cmin_count(
+        "total_removed_units",
+        total_removed,
+        report
+            .total_removed_units
+            .ok_or(CminSummaryError::MissingCount("total_removed_units"))?,
+    )?;
+    require_cmin_count(
+        "total_artifact_count",
+        total_artifacts,
+        report
+            .total_artifact_count
+            .ok_or(CminSummaryError::MissingCount("total_artifact_count"))?,
+    )?;
+    Ok(())
+}
+
+fn cmin_count_sum(
+    field: &'static str,
+    values: impl IntoIterator<Item = usize>,
+) -> std::result::Result<usize, CminSummaryError> {
+    let mut total = 0usize;
+    for value in values {
+        total = total
+            .checked_add(value)
+            .ok_or(CminSummaryError::CountOverflow(field))?;
+    }
+    Ok(total)
+}
+
+fn require_cmin_count(
+    field: &'static str,
+    expected: usize,
+    actual: usize,
+) -> std::result::Result<(), CminSummaryError> {
+    if expected != actual {
+        return Err(CminSummaryError::CountMismatch {
+            field,
+            expected,
+            actual,
+        });
+    }
+    Ok(())
 }
 
 fn require_cmin_nonempty(
@@ -1643,6 +1763,10 @@ mod tests {
     "-runs=0",
     "-artifact_prefix=<target-artifact-dir>/"
   ],
+  "total_before_cmin_units": 3,
+  "total_after_cmin_units": 2,
+  "total_removed_units": 1,
+  "total_artifact_count": 1,
   "targets": [
     {
       "target": "superblock_parse",
@@ -1664,7 +1788,36 @@ mod tests {
 
         assert_eq!(report.schema, CMIN_SUMMARY_SCHEMA);
         assert_eq!(report.engine, "cargo-fuzz");
+        assert_eq!(report.total_before_cmin_units, Some(3));
+        assert_eq!(report.total_removed_units, Some(1));
         assert_eq!(report.targets[0].target, "superblock_parse");
+    }
+
+    #[test]
+    fn cmin_summary_report_accepts_legacy_report_without_totals() {
+        let mut report: serde_json::Value = serde_json::from_str(VALID_CMIN_SUMMARY).unwrap();
+        report
+            .as_object_mut()
+            .unwrap()
+            .remove("total_before_cmin_units");
+        report
+            .as_object_mut()
+            .unwrap()
+            .remove("total_after_cmin_units");
+        report
+            .as_object_mut()
+            .unwrap()
+            .remove("total_removed_units");
+        report
+            .as_object_mut()
+            .unwrap()
+            .remove("total_artifact_count");
+        let report = serde_json::to_string(&report).unwrap();
+
+        let report = parse_cmin_summary_report(&report).unwrap();
+
+        assert_eq!(report.total_before_cmin_units, None);
+        assert_eq!(report.total_removed_units, None);
     }
 
     #[test]
@@ -1748,6 +1901,40 @@ mod tests {
             } if target == "superblock_parse"
                 && expected == "corpus/rust-fuzz/superblock_parse/regression.log"
                 && actual == "corpus/rust-fuzz/inode_locate/regression.log"
+        ));
+    }
+
+    #[test]
+    fn cmin_summary_report_rejects_total_count_mismatch() {
+        let report = VALID_CMIN_SUMMARY
+            .replace(r#""total_removed_units": 1"#, r#""total_removed_units": 2"#);
+
+        let error = parse_cmin_summary_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            CminSummaryError::CountMismatch {
+                field: "total_removed_units",
+                expected: 1,
+                actual: 2,
+            }
+        ));
+    }
+
+    #[test]
+    fn cmin_summary_report_rejects_partial_total_counts() {
+        let mut report: serde_json::Value = serde_json::from_str(VALID_CMIN_SUMMARY).unwrap();
+        report
+            .as_object_mut()
+            .unwrap()
+            .remove("total_removed_units");
+        let report = serde_json::to_string(&report).unwrap();
+
+        let error = parse_cmin_summary_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            CminSummaryError::MissingCount("total_removed_units")
         ));
     }
 

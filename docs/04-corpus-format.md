@@ -104,6 +104,7 @@ records the cargo-fuzz version, nightly rustc version, run/cmin/regression
 flags, and one entry per target with:
 
 - corpus unit counts before and after `cargo fuzz cmin`,
+- aggregate before, after, removed, and artifact counts,
 - crash artifact counts,
 - corpus and artifact directories,
 - run, cmin, and `-runs=0` regression log paths.
@@ -112,7 +113,8 @@ Use this report with `coverage-manifest.json` to review whether a minimized
 unit should be imported into `corpus/seeds/minimized/<target>/`. The Rust
 library parser rejects unknown schemas, empty required fields or flag lists,
 duplicate targets, and summaries where a target has more corpus units after
-`cmin` than before. Target names must be single portable path components, and
+`cmin` than before. When aggregate count fields are present, they must match
+the per-target rows. Target names must be single portable path components, and
 the corpus, artifact, and log paths must match the weekly
 `corpus/rust-fuzz/<target>/` layout.
 

@@ -197,6 +197,9 @@ jobs:
               for line in Path(jsonl).read_text(encoding="utf-8").splitlines()
               if line.strip()
           ]
+          total_before = sum(entry["before_cmin_units"] for entry in entries)
+          total_after = sum(entry["after_cmin_units"] for entry in entries)
+          total_artifacts = sum(entry["artifact_count"] for entry in entries)
           report = {
               "schema": "erofs-rs.cmin-summary.v1",
               "engine": "cargo-fuzz",
@@ -212,6 +215,10 @@ jobs:
                   "-runs=0",
                   "-artifact_prefix=<target-artifact-dir>/",
               ],
+              "total_before_cmin_units": total_before,
+              "total_after_cmin_units": total_after,
+              "total_removed_units": total_before - total_after,
+              "total_artifact_count": total_artifacts,
               "targets": entries,
           }
           with open(output, "w", encoding="utf-8") as handle:
