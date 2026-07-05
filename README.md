@@ -245,7 +245,8 @@ tools can create them:
 
 The script writes `manifest.json` next to the generated images with the source
 profile, mkfs command, mkfs version, erofs-utils revision, feature tags, and
-full SHA-256 for each seed.
+full SHA-256 for each seed. The Rust test suite validates this manifest shape
+so campaign tooling can rely on the required fields and SHA-256 width.
 
 ### `oracle` – userspace differential checks
 
