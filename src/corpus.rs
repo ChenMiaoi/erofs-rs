@@ -1,12 +1,16 @@
 use crate::cli::{CorpusArgs, CorpusMode};
 use anyhow::{Result, bail};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 const COVERAGE_CATEGORY: &str = "coverage-interesting";
+const COVERAGE_MANIFEST_FILE: &str = "coverage-manifest.json";
+const COVERAGE_MANIFEST_SCHEMA: &str = "erofs-rs.coverage-corpus.v1";
+const DEFAULT_COVERAGE_TARGET: &str = "unassigned";
 
 const KNOWN_RESULTS: &[&str] = &[
     "accepted",
@@ -32,6 +36,47 @@ struct ArtifactRecord {
     category: String,
     lifecycle: String,
     hash: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct CoverageManifest {
+    schema: &'static str,
+    mode: &'static str,
+    input_dir: String,
+    output_dir: String,
+    total_input_units: usize,
+    collected_units: usize,
+    unique_hashes: usize,
+    duplicates_removed: usize,
+    targets: Vec<CoverageTargetSummary>,
+    units: Vec<CoverageManifestUnit>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct CoverageTargetSummary {
+    target: String,
+    input_units: usize,
+    collected_units: usize,
+    unique_hashes: usize,
+    duplicates_removed: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct CoverageManifestUnit {
+    target: String,
+    source_path: String,
+    copied_path: String,
+    sha256: String,
+    size_bytes: u64,
+    lifecycle: String,
+}
+
+#[derive(Clone, Debug, Default)]
+struct CoverageTargetStats {
+    input_units: usize,
+    collected_units: usize,
+    duplicates_removed: usize,
+    hashes: HashSet<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -253,10 +298,64 @@ fn should_collect_coverage_file(path: &Path) -> bool {
     )
 }
 
+fn portable_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn relative_path_string(root: &Path, path: &Path) -> String {
+    portable_path(path.strip_prefix(root).unwrap_or(path))
+}
+
+fn infer_coverage_target(input_dir: &Path, path: &Path) -> String {
+    let relative = path.strip_prefix(input_dir).unwrap_or(path);
+    let components: Vec<String> = relative
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => Some(part.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect();
+
+    if let Some(corpus_idx) = components
+        .iter()
+        .position(|component| component == "corpus")
+    {
+        if corpus_idx > 0 {
+            return components[corpus_idx - 1].clone();
+        }
+        return input_dir
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| DEFAULT_COVERAGE_TARGET.to_string());
+    }
+
+    if components.len() > 1 {
+        return components[0].clone();
+    }
+
+    DEFAULT_COVERAGE_TARGET.to_string()
+}
+
+fn coverage_target_summaries(
+    stats: BTreeMap<String, CoverageTargetStats>,
+) -> Vec<CoverageTargetSummary> {
+    stats
+        .into_iter()
+        .map(|(target, stats)| CoverageTargetSummary {
+            target,
+            input_units: stats.input_units,
+            collected_units: stats.collected_units,
+            unique_hashes: stats.hashes.len(),
+            duplicates_removed: stats.duplicates_removed,
+        })
+        .collect()
+}
+
 fn collect_coverage_artifacts(
     args: &CorpusArgs,
     output_dir: &Path,
-) -> Result<(CorpusSummary, Vec<ArtifactRecord>)> {
+) -> Result<(CorpusSummary, Vec<ArtifactRecord>, CoverageManifest)> {
     let coverage_dir = output_dir.join(COVERAGE_CATEGORY);
     fs::create_dir_all(&coverage_dir).map_err(|e| {
         anyhow::anyhow!(
@@ -277,15 +376,29 @@ fn collect_coverage_artifacts(
     inputs.sort();
 
     let mut records = Vec::new();
+    let mut manifest_units = Vec::new();
+    let mut target_stats: BTreeMap<String, CoverageTargetStats> = BTreeMap::new();
     let mut seen_hashes = HashSet::new();
     let mut duplicates_removed = 0usize;
+    let input_root = Path::new(&args.input_dir);
 
     for path in &inputs {
+        let target = infer_coverage_target(input_root, path);
+        let stats = target_stats.entry(target.clone()).or_default();
+        stats.input_units = stats
+            .input_units
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("coverage input count overflows for {target}"))?;
+
         let hash = file_hash(path)?;
         if !seen_hashes.insert(hash.clone()) {
             duplicates_removed = duplicates_removed
                 .checked_add(1)
                 .ok_or_else(|| anyhow::anyhow!("duplicate count overflows"))?;
+            stats.duplicates_removed = stats
+                .duplicates_removed
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("duplicate count overflows for {target}"))?;
             continue;
         }
 
@@ -297,6 +410,25 @@ fn collect_coverage_artifacts(
                 .unwrap_or("coverage-unit"),
             &hash,
         )?;
+        stats.collected_units = stats
+            .collected_units
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("coverage unit count overflows for {target}"))?;
+        stats.hashes.insert(hash.clone());
+
+        let copied_path = Path::new(COVERAGE_CATEGORY).join(&copied_name);
+        let size_bytes = fs::metadata(path)
+            .map_err(|e| anyhow::anyhow!("failed to stat {}: {e}", path.display()))?
+            .len();
+        manifest_units.push(CoverageManifestUnit {
+            target,
+            source_path: relative_path_string(input_root, path),
+            copied_path: portable_path(&copied_path),
+            sha256: hash.clone(),
+            size_bytes,
+            lifecycle: lifecycle_bucket(COVERAGE_CATEGORY).to_string(),
+        });
+
         records.push(ArtifactRecord {
             file: copied_name,
             category: COVERAGE_CATEGORY.to_string(),
@@ -314,7 +446,19 @@ fn collect_coverage_artifacts(
         duplicates_removed,
         &records,
     );
-    Ok((summary, records))
+    let manifest = CoverageManifest {
+        schema: COVERAGE_MANIFEST_SCHEMA,
+        mode: "coverage",
+        input_dir: portable_path(input_root),
+        output_dir: portable_path(output_dir),
+        total_input_units: summary.total_files,
+        collected_units: summary.copied_artifacts,
+        unique_hashes: summary.unique_hashes,
+        duplicates_removed: summary.duplicates_removed,
+        targets: coverage_target_summaries(target_stats),
+        units: manifest_units,
+    };
+    Ok((summary, records, manifest))
 }
 
 fn build_summary(
@@ -449,6 +593,15 @@ fn write_report(path: &Path, summary: &CorpusSummary, records: &[ArtifactRecord]
     Ok(())
 }
 
+fn write_coverage_manifest(path: &Path, manifest: &CoverageManifest) -> Result<()> {
+    let json = serde_json::to_string_pretty(manifest)
+        .map_err(|e| anyhow::anyhow!("failed to encode coverage manifest: {e}"))?;
+    fs::write(path, json + "\n").map_err(|e| {
+        anyhow::anyhow!("failed to write coverage manifest {}: {e}", path.display())
+    })?;
+    Ok(())
+}
+
 pub fn run(args: &CorpusArgs) -> Result<()> {
     if !Path::new(&args.input_dir).exists() {
         bail!("Input directory not found: {}", args.input_dir);
@@ -458,13 +611,20 @@ pub fn run(args: &CorpusArgs) -> Result<()> {
     fs::create_dir_all(output_dir)
         .map_err(|e| anyhow::anyhow!("failed to create output directory: {e}"))?;
 
-    let (summary, records) = match args.mode {
+    let (summary, records, coverage_manifest) = match args.mode {
         CorpusMode::Hash | CorpusMode::Classification => {
-            collect_manifest_artifacts(args, output_dir)?
+            let (summary, records) = collect_manifest_artifacts(args, output_dir)?;
+            (summary, records, None)
         }
-        CorpusMode::Coverage => collect_coverage_artifacts(args, output_dir)?,
+        CorpusMode::Coverage => {
+            let (summary, records, manifest) = collect_coverage_artifacts(args, output_dir)?;
+            (summary, records, Some(manifest))
+        }
     };
 
+    if let Some(manifest) = &coverage_manifest {
+        write_coverage_manifest(&output_dir.join(COVERAGE_MANIFEST_FILE), manifest)?;
+    }
     write_report(Path::new(&args.report), &summary, &records)?;
 
     println!(
@@ -478,6 +638,12 @@ pub fn run(args: &CorpusArgs) -> Result<()> {
     println!("  Crashes: {}", summary.crashes);
     println!("  Timeouts: {}", summary.timeouts);
     println!("  Report: {}", args.report);
+    if coverage_manifest.is_some() {
+        println!(
+            "  Coverage manifest: {}",
+            output_dir.join(COVERAGE_MANIFEST_FILE).display()
+        );
+    }
     println!("\nCategories:");
     for (cat, count) in category_counts(&records) {
         println!("  {cat}: {count}");
@@ -488,7 +654,10 @@ pub fn run(args: &CorpusArgs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{file_hash, lifecycle_bucket, should_collect_coverage_file};
+    use super::{
+        DEFAULT_COVERAGE_TARGET, file_hash, infer_coverage_target, lifecycle_bucket,
+        should_collect_coverage_file,
+    };
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
@@ -529,5 +698,26 @@ mod tests {
         assert!(!should_collect_coverage_file(Path::new("sidecar.json")));
         assert!(should_collect_coverage_file(Path::new("fuzz-unit")));
         assert!(should_collect_coverage_file(Path::new("input.erofs")));
+    }
+
+    #[test]
+    fn coverage_target_infers_cargo_fuzz_layout() {
+        let root = Path::new("corpus/rust-fuzz");
+
+        assert_eq!(
+            infer_coverage_target(
+                root,
+                Path::new("corpus/rust-fuzz/superblock_parse/corpus/a")
+            ),
+            "superblock_parse"
+        );
+        assert_eq!(
+            infer_coverage_target(root, Path::new("corpus/rust-fuzz/inode_locate/a")),
+            "inode_locate"
+        );
+        assert_eq!(
+            infer_coverage_target(root, Path::new("corpus/rust-fuzz/unit-a")),
+            DEFAULT_COVERAGE_TARGET
+        );
     }
 }

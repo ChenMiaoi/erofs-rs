@@ -147,11 +147,16 @@ by full SHA-256, and writes artifacts into fsck classification directories. Use
 grouping by classification. Use `--mode coverage` for inputs that have already
 been selected by a coverage-guided engine such as `cargo fuzz cmin`; it writes
 unique units under `coverage-interesting/` and reports total files, unique
-hashes, coverage-interesting units, crashes, and timeouts. Reports also include
-lifecycle buckets such as `queue/userspace`, `rejects/checksum`,
-`crashes/userspace`, and `timeouts/userspace` so long-running campaigns can
-separate expected rejects from actionable triage queues without changing the
-classification directory layout.
+hashes, coverage-interesting units, crashes, and timeouts. Coverage mode also
+writes `coverage-manifest.json` in the output directory with a stable schema,
+per-target input/collected/duplicate counts, source paths, copied artifact
+paths, sizes, lifecycle buckets, and full SHA-256 digests. For `cargo-fuzz`
+layouts such as `<target>/corpus/<unit>`, the manifest records `<target>` so
+weekly `cmin` output can be reviewed and imported without losing provenance.
+Reports also include lifecycle buckets such as `queue/userspace`,
+`rejects/checksum`, `crashes/userspace`, and `timeouts/userspace` so long-running
+campaigns can separate expected rejects from actionable triage queues without
+changing the classification directory layout.
 
 ### `fuzz` – mutation-based fuzzing
 

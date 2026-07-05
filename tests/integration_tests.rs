@@ -938,10 +938,14 @@ fn test_corpus_coverage_mode_collects_minimized_units() {
     let corpus = tmp.path().join("coverage");
     let artifacts = tmp.path().join("artifacts");
     let report = tmp.path().join("report.txt");
-    fs::create_dir(&corpus).unwrap();
+    let target_a = corpus.join("superblock_parse").join("corpus");
+    let target_b = corpus.join("inode_locate").join("corpus");
+    fs::create_dir_all(&target_a).unwrap();
+    fs::create_dir_all(&target_b).unwrap();
 
-    fs::write(corpus.join("unit-a"), b"coverage-a").unwrap();
-    fs::write(corpus.join("unit-b"), b"coverage-a").unwrap();
+    fs::write(target_a.join("unit-a"), b"coverage-a").unwrap();
+    fs::write(target_a.join("unit-b"), b"coverage-a").unwrap();
+    fs::write(target_b.join("unit-c"), b"coverage-b").unwrap();
     fs::write(corpus.join("run.log"), b"not corpus").unwrap();
 
     let args = erofs_rs::cli::CorpusArgs {
@@ -954,15 +958,38 @@ fn test_corpus_coverage_mode_collects_minimized_units() {
 
     let content = fs::read_to_string(&report).unwrap();
     assert!(content.contains("Mode: coverage"));
-    assert!(content.contains("Total files: 2"));
-    assert!(content.contains("Unique hashes: 1"));
-    assert!(content.contains("Coverage-interesting units: 1"));
-    assert!(content.contains("- queue/userspace: 1"));
+    assert!(content.contains("Total files: 3"));
+    assert!(content.contains("Unique hashes: 2"));
+    assert!(content.contains("Coverage-interesting units: 2"));
+    assert!(content.contains("- queue/userspace: 2"));
     assert_eq!(
         fs::read_dir(artifacts.join("coverage-interesting"))
             .unwrap()
             .count(),
-        1
+        2
+    );
+
+    let manifest_path = artifacts.join("coverage-manifest.json");
+    let manifest: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(manifest_path).unwrap()).unwrap();
+    assert_eq!(manifest["schema"], "erofs-rs.coverage-corpus.v1");
+    assert_eq!(manifest["mode"], "coverage");
+    assert_eq!(manifest["total_input_units"], 3);
+    assert_eq!(manifest["collected_units"], 2);
+    assert_eq!(manifest["duplicates_removed"], 1);
+    assert_eq!(manifest["targets"][0]["target"], "inode_locate");
+    assert_eq!(manifest["targets"][0]["collected_units"], 1);
+    assert_eq!(manifest["targets"][1]["target"], "superblock_parse");
+    assert_eq!(manifest["targets"][1]["input_units"], 2);
+    assert_eq!(manifest["targets"][1]["duplicates_removed"], 1);
+    assert_eq!(manifest["units"].as_array().unwrap().len(), 2);
+    assert!(
+        manifest["units"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|unit| unit["target"] == "superblock_parse"
+                && unit["source_path"] == "superblock_parse/corpus/unit-a")
     );
 }
 
