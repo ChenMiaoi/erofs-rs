@@ -134,6 +134,7 @@ jobs:
             compression_parse
             parser_differential
             kernel_dmesg_classify
+            fsck_output_classify
             report_schema_parse
           )
           for target in "${targets[@]}"; do

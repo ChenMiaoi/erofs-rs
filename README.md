@@ -302,14 +302,16 @@ cargo fuzz run chunk_parse -- -runs=1000
 cargo fuzz run compression_parse -- -runs=1000
 cargo fuzz run parser_differential -- -runs=1000
 cargo fuzz run kernel_dmesg_classify -- -runs=1000
+cargo fuzz run fsck_output_classify -- -runs=1000
 cargo fuzz run report_schema_parse -- -runs=1000
 ```
 
 The initial targets cover superblock parsing, inode location, directory-entry
 location, inline xattr parsing, chunk metadata parsing, compression map header
 parsing, strict/tolerant parser disagreement, kernel dmesg classification,
-stable report schema parsing, checksum repair, named-field injection, and the
-strict `info` traversal path.
+fsck output and sanitizer diagnostic classification, stable report schema
+parsing, checksum repair, named-field injection, and the strict `info`
+traversal path.
 Generated libFuzzer corpora and artifacts under `fuzz/corpus/`,
 `fuzz/artifacts/`, and `fuzz/target/` are local byproducts and should not be
 committed unless a minimized regression is intentionally added.

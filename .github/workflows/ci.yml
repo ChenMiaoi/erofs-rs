@@ -75,6 +75,7 @@ jobs:
           cargo +nightly fuzz run compression_parse -- -runs=1000
           cargo +nightly fuzz run parser_differential -- -runs=1000
           cargo +nightly fuzz run kernel_dmesg_classify -- -runs=1000
+          cargo +nightly fuzz run fsck_output_classify -- -runs=1000
           cargo +nightly fuzz run report_schema_parse -- -runs=1000
 
   userspace-integration:
