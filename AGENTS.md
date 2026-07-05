@@ -150,35 +150,54 @@ and why. Do not claim tests passed when they were skipped.
 
 ## Kernel-Style Commit Messages
 
-Use Linux kernel commit-message style for commits.
+Use Linux kernel commit-message style for commits. Commit messages are part of
+the review surface for this kernel-adjacent project, so keep them concise,
+wrapped, and free of local test logs.
 
 Format:
 
 ```text
 area: concise imperative summary
 
-Explain the problem first, then the approach. Include relevant EROFS,
-fsck, corpus, or kernel-replay context. Describe user-visible behavior,
-compatibility concerns, and test coverage.
+Explain the problem first. Describe the observable failure, missing coverage,
+reproducibility gap, unsafe behavior, or maintenance risk.
+
+Explain the approach second. Describe what changed and why it reduces the
+risk. Include relevant EROFS, fsck, corpus, or kernel-replay context when it
+helps review the patch.
 
 Signed-off-by: Name <email@example.com>
 ```
 
 Rules:
 
-- Keep the subject line ideally under 75 characters.
+- Keep the subject line 75 characters or fewer.
+- Wrap body text at 75 characters or fewer. Trailer lines may exceed this only
+  when the trailer value itself requires it.
+- Use real blank lines between the subject, body paragraphs, and trailers. Do
+  not encode paragraph breaks as literal `\n` strings.
 - Use a lowercase subsystem-style prefix such as `image:`, `inode:`,
   `dirent:`, `checksum:`, `fsck:`, `fuzz:`, `corpus:`, `cli:`, `tests:`,
   `scripts:`, `qemu:`, or `docs:`.
 - Use imperative mood: `fix`, `reject`, `validate`, `record`, `add`, not
   `fixed`, `rejects`, or `adding`.
-- The body should answer why the change is needed, what changed, and what risk
-  it reduces.
-- Include exact test commands in the commit body or PR notes when relevant.
+- The body must answer why the change is needed, what changed, and what risk it
+  reduces. Prefer two short paragraphs: problem first, approach second.
+- Mention user-visible behavior, compatibility impact, corpus format changes,
+  or kernel/fsck safety consequences when they matter.
+- Do not add `Tests:`, `Tests run:`, `Test plan:`, or similar command-log
+  sections to commit messages. Exact commands that were run belong in PR notes,
+  cover letters, or the agent's final response, not in the commit body.
+- Do not paste long command output, workflow logs, benchmark dumps, or local
+  environment notes into commit messages.
 - Include `Fixes:` only when there is a real referenced commit.
 - Include `Reported-by:`, `Tested-by:`, `Reviewed-by:`, or `Co-developed-by:`
   only when accurate.
 - Include `Signed-off-by:` for Developer Certificate of Origin style tracking.
+- Keep trailers at the end of the message, one per line, after a blank line.
+- Before finalizing a rewritten commit stack, check all commit messages for
+  subject/body line length, forbidden test-log sections, and missing
+  `Signed-off-by:` trailers.
 
 Example:
 
