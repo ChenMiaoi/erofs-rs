@@ -997,12 +997,14 @@ fn test_corpus_coverage_mode_collects_minimized_units() {
 fn test_oracle_report_with_dump_check() {
     let tmp = TempDir::new().unwrap();
     let report = tmp.path().join("oracle-report.txt");
+    let json_report = tmp.path().join("oracle-report.json");
 
     let args = erofs_rs::cli::OracleArgs {
         input: fixture("single.erofs").to_string_lossy().to_string(),
         fsck: fsck_path().to_string_lossy().to_string(),
         dump: Some("/bin/true".to_string()),
         report: Some(report.to_string_lossy().to_string()),
+        json_report: Some(json_report.to_string_lossy().to_string()),
         exec_timeout: 1,
         max_output_bytes: 1024,
         no_kill_process_group: false,
@@ -1018,4 +1020,27 @@ fn test_oracle_report_with_dump_check() {
     assert!(content.contains("rust_parser_vs_fsck: agree"));
     assert!(content.contains("fsck_vs_checksum_repair_fsck: agree"));
     assert!(content.contains("interesting_findings: 0"));
+
+    let json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(json_report).unwrap()).unwrap();
+    assert_eq!(json["schema"], "erofs-rs.oracle-report.v1");
+    assert_eq!(json["checks"].as_array().unwrap().len(), 4);
+    assert_eq!(json["matrix"].as_array().unwrap().len(), 6);
+    assert_eq!(json["interesting_findings"], 0);
+    assert!(
+        json["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|check| check["name"] == "checksum_repair_fsck" && check["status"] == "accepted")
+    );
+    assert!(
+        json["matrix"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["name"] == "rust_parser_vs_fsck"
+                && entry["verdict"] == "agree"
+                && entry["disagrees"] == false)
+    );
 }

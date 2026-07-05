@@ -5,10 +5,13 @@ use crate::fsck::{ExecLimits, FsckResult, run_fsck_with_limits};
 use crate::image::{Image, read_image, write_image};
 use crate::inode::locate_inodes;
 use anyhow::{Context, Result, bail};
+use serde::Serialize;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
 use tempfile::NamedTempFile;
+
+const ORACLE_REPORT_SCHEMA: &str = "erofs-rs.oracle-report.v1";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum OracleStatus {
@@ -37,6 +40,34 @@ struct OracleCheck {
     status: OracleStatus,
     classification: String,
     reason: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct OracleJsonReport {
+    schema: &'static str,
+    input: String,
+    checks: Vec<OracleJsonCheck>,
+    matrix: Vec<OracleMatrixEntry>,
+    interesting_findings: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct OracleJsonCheck {
+    name: String,
+    status: String,
+    classification: String,
+    reason: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct OracleMatrixEntry {
+    name: String,
+    left: String,
+    right: String,
+    left_status: String,
+    right_status: String,
+    verdict: String,
+    disagrees: bool,
 }
 
 impl OracleCheck {
@@ -175,26 +206,55 @@ fn tool_result_check(name: &'static str, result: &FsckResult) -> OracleCheck {
     OracleCheck::rejected(name, &result.classification, &result.reason)
 }
 
-fn agreement_line(left: &OracleCheck, right: &OracleCheck) -> (String, bool) {
+fn compare_checks(left: &OracleCheck, right: &OracleCheck) -> OracleMatrixEntry {
     let name = format!("{}_vs_{}", left.name, right.name);
-    if !left.status.is_decision() || !right.status.is_decision() {
-        return (format!("- {name}: skipped"), false);
-    }
-    let disagrees = left.status != right.status;
-    let verdict = if disagrees { "disagree" } else { "agree" };
-    (
-        format!(
-            "- {name}: {verdict} ({}={}, {}={})",
-            left.name,
-            left.status.as_str(),
-            right.name,
-            right.status.as_str()
-        ),
+    let skipped = !left.status.is_decision() || !right.status.is_decision();
+    let disagrees = !skipped && left.status != right.status;
+    let verdict = if skipped {
+        "skipped"
+    } else if disagrees {
+        "disagree"
+    } else {
+        "agree"
+    };
+
+    OracleMatrixEntry {
+        name,
+        left: left.name.to_string(),
+        right: right.name.to_string(),
+        left_status: left.status.as_str().to_string(),
+        right_status: right.status.as_str().to_string(),
+        verdict: verdict.to_string(),
         disagrees,
+    }
+}
+
+fn oracle_matrix(checks: &[OracleCheck]) -> Vec<OracleMatrixEntry> {
+    let mut matrix = Vec::new();
+    for left_idx in 0..checks.len() {
+        for right_idx in (left_idx + 1)..checks.len() {
+            matrix.push(compare_checks(&checks[left_idx], &checks[right_idx]));
+        }
+    }
+    matrix
+}
+
+fn interesting_findings(matrix: &[OracleMatrixEntry]) -> usize {
+    matrix.iter().filter(|entry| entry.disagrees).count()
+}
+
+fn matrix_line(entry: &OracleMatrixEntry) -> String {
+    if entry.verdict == "skipped" {
+        return format!("- {}: skipped", entry.name);
+    }
+
+    format!(
+        "- {}: {} ({}={}, {}={})",
+        entry.name, entry.verdict, entry.left, entry.left_status, entry.right, entry.right_status
     )
 }
 
-fn render_report(input: &Path, checks: &[OracleCheck]) -> String {
+fn render_report(input: &Path, checks: &[OracleCheck], matrix: &[OracleMatrixEntry]) -> String {
     let mut lines = vec![
         "# EROFS Userspace Oracle Report".to_string(),
         String::new(),
@@ -216,23 +276,46 @@ fn render_report(input: &Path, checks: &[OracleCheck]) -> String {
 
     lines.extend([String::new(), "## Oracle Matrix".to_string(), String::new()]);
 
-    let mut disagreements = 0usize;
-    for left_idx in 0..checks.len() {
-        for right_idx in (left_idx + 1)..checks.len() {
-            let (line, disagrees) = agreement_line(&checks[left_idx], &checks[right_idx]);
-            if disagrees {
-                disagreements += 1;
-            }
-            lines.push(line);
-        }
+    for entry in matrix {
+        lines.push(matrix_line(entry));
     }
 
     lines.extend([
         String::new(),
-        format!("interesting_findings: {disagreements}"),
+        format!("interesting_findings: {}", interesting_findings(matrix)),
     ]);
 
     lines.join("\n") + "\n"
+}
+
+fn json_report(
+    input: &Path,
+    checks: &[OracleCheck],
+    matrix: &[OracleMatrixEntry],
+) -> OracleJsonReport {
+    OracleJsonReport {
+        schema: ORACLE_REPORT_SCHEMA,
+        input: input.to_string_lossy().to_string(),
+        checks: checks
+            .iter()
+            .map(|check| OracleJsonCheck {
+                name: check.name.to_string(),
+                status: check.status.as_str().to_string(),
+                classification: check.classification.clone(),
+                reason: check.reason.clone(),
+            })
+            .collect(),
+        matrix: matrix.to_vec(),
+        interesting_findings: interesting_findings(matrix),
+    }
+}
+
+fn write_json_report(path: &str, report: &OracleJsonReport) -> Result<()> {
+    let json = serde_json::to_string_pretty(report)
+        .map_err(|e| anyhow::anyhow!("failed to encode oracle JSON report: {e}"))?;
+    fs::write(path, json + "\n")
+        .map_err(|e| anyhow::anyhow!("failed to write oracle JSON report {path}: {e}"))?;
+    Ok(())
 }
 
 pub fn run(args: &OracleArgs) -> Result<()> {
@@ -250,11 +333,16 @@ pub fn run(args: &OracleArgs) -> Result<()> {
         checksum_repair_check(args, &image, limits)
             .context("failed to run checksum repair oracle")?,
     ];
-    let report = render_report(input, &checks);
+    let matrix = oracle_matrix(&checks);
+    let report = render_report(input, &checks, &matrix);
 
     if let Some(report_path) = &args.report {
         fs::write(report_path, &report)
             .map_err(|e| anyhow::anyhow!("failed to write oracle report {report_path}: {e}"))?;
+    }
+    if let Some(report_path) = &args.json_report {
+        let json = json_report(input, &checks, &matrix);
+        write_json_report(report_path, &json)?;
     }
 
     print!("{report}");
@@ -263,7 +351,7 @@ pub fn run(args: &OracleArgs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{OracleCheck, OracleStatus, agreement_line};
+    use super::{OracleCheck, OracleStatus, compare_checks};
 
     #[test]
     fn agreement_detects_decision_disagreements() {
@@ -280,9 +368,11 @@ mod tests {
             reason: "bad".to_string(),
         };
 
-        let (line, disagrees) = agreement_line(&rust, &fsck);
+        let entry = compare_checks(&rust, &fsck);
 
-        assert!(disagrees);
-        assert!(line.contains("disagree"));
+        assert!(entry.disagrees);
+        assert_eq!(entry.verdict, "disagree");
+        assert_eq!(entry.left_status, "accepted");
+        assert_eq!(entry.right_status, "rejected");
     }
 }

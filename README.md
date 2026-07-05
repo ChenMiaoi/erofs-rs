@@ -254,13 +254,16 @@ erofs-rs oracle \
     --input corpus/seeds/single.erofs \
     --fsck build/erofs-utils/fsck/fsck.erofs \
     --dump build/erofs-utils/dump/dump.erofs \
-    --report /tmp/oracle-report.txt
+    --report /tmp/oracle-report.txt \
+    --json-report /tmp/oracle-report.json
 ```
 
 The oracle report compares the Rust strict parser, `fsck.erofs`, optional
 `dump.erofs -s`, and `fsck.erofs` after Rust checksum repair. Disagreements are
 reported as interesting findings so parser/tool/checksum mismatches can be
-triaged separately from ordinary malformed image rejections.
+triaged separately from ordinary malformed image rejections. `--json-report`
+writes the same checks, pairwise matrix verdicts, and interesting-finding count
+with the stable `erofs-rs.oracle-report.v1` schema for campaign automation.
 
 ## Library usage
 
