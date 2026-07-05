@@ -355,17 +355,19 @@ chunked-file, and packed-fragment variants when the host tools can create them:
     --output-dir /tmp/seed-matrix \
     --block-size 1024,4096 \
     --compression none,lz4
+erofs-rs seed-manifest --manifest /tmp/seed-matrix/manifest.json
 ```
 
 The script writes `manifest.json` next to the generated images with the source
 profile, requirement level, mkfs command, mkfs version, erofs-utils revision,
 feature tags, and full SHA-256 for each seed. `required` entries are expected
 to build on ordinary CI hosts, while `best_effort` entries depend on host
-capabilities such as xattr, ACL, socket, or device-node support. Feature tags
-must use `namespace:value` form. The Rust test suite validates this manifest
-shape so campaign tooling can rely on the required fields, unique seed paths
-and digests, feature tag shape, per-entry feature uniqueness, and SHA-256
-width.
+capabilities such as xattr, ACL, socket, or device-node support. Use
+`erofs-rs seed-manifest --manifest ...` to validate generated manifests before
+CI or review tooling consumes them. Feature tags must use `namespace:value`
+form. The Rust validator checks required fields, unique seed paths and
+digests, safe seed file names, path-to-seed consistency, per-entry feature
+uniqueness, feature tag shape, and SHA-256 width.
 
 ### `oracle` – userspace differential checks
 

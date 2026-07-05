@@ -61,7 +61,8 @@ jobs:
           ./scripts/generate-seed-corpus.sh
           ./scripts/generate-complex-seeds.sh
           ./scripts/generate-seed-matrix.sh
-          python3 -m json.tool corpus/seeds/matrix/manifest.json >/dev/null
+          cargo run --locked -- seed-manifest \
+            --manifest corpus/seeds/matrix/manifest.json
 
       - name: Build erofs-rs CLI
         run: cargo build --locked --release

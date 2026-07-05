@@ -28,6 +28,8 @@ pub enum Commands {
     Oracle(OracleArgs),
     /// Convert a captured QEMU dmesg log into a kernel replay report.
     KernelReport(KernelReportArgs),
+    /// Validate a generated seed matrix manifest.
+    SeedManifest(SeedManifestArgs),
     /// Print superblock, inode, and dirent information.
     Info(InfoArgs),
 }
@@ -126,6 +128,12 @@ pub enum CorpusMode {
     Coverage,
     /// Preserve every manifest artifact while grouping by classification.
     Classification,
+}
+
+#[derive(Parser, Debug)]
+pub struct SeedManifestArgs {
+    #[arg(long, help = "Path to a generated seed matrix manifest JSON file")]
+    pub manifest: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]

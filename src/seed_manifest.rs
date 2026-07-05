@@ -1,5 +1,9 @@
+use crate::cli::SeedManifestArgs;
+use anyhow::{Context, Result as AnyhowResult};
 use serde::Deserialize;
 use std::collections::HashSet;
+use std::fs;
+use std::path::{Component, Path};
 use thiserror::Error;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -33,6 +37,20 @@ pub enum SeedManifestError {
     EmptyManifest,
     #[error("seed matrix entry {index} has empty {field}")]
     EmptyField { index: usize, field: &'static str },
+    #[error("seed matrix entry {index} has invalid seed file name: {seed}")]
+    InvalidSeedName { index: usize, seed: String },
+    #[error("seed matrix entry {index} field {field} has invalid path: {path}")]
+    InvalidPath {
+        index: usize,
+        field: &'static str,
+        path: String,
+    },
+    #[error("seed matrix entry {index} path does not end with seed file name {seed}: {path}")]
+    PathSeedMismatch {
+        index: usize,
+        seed: String,
+        path: String,
+    },
     #[error("seed matrix entry {index} has invalid SHA-256 digest: {sha256}")]
     InvalidSha256 { index: usize, sha256: String },
     #[error("seed matrix entry {index} has no feature tags")]
@@ -83,6 +101,8 @@ pub fn validate_seed_matrix_manifest(entries: &[SeedMatrixEntry]) -> Result<(), 
         require_nonempty(index, "source_profile", &entry.source_profile)?;
         require_nonempty(index, "mkfs", &entry.mkfs)?;
         require_nonempty(index, "mkfs_version", &entry.mkfs_version)?;
+        require_seed_name(index, &entry.seed)?;
+        require_seed_path(index, &entry.path, &entry.seed)?;
         require_unique(index, "seed", &entry.seed, &mut seeds)?;
         require_unique(index, "path", &entry.path, &mut paths)?;
 
@@ -125,6 +145,58 @@ pub fn validate_seed_matrix_manifest(entries: &[SeedMatrixEntry]) -> Result<(), 
     Ok(())
 }
 
+pub fn run(args: &SeedManifestArgs) -> AnyhowResult<()> {
+    let content = fs::read_to_string(&args.manifest)
+        .with_context(|| format!("failed to read seed matrix manifest {}", args.manifest))?;
+    let entries = parse_seed_matrix_manifest(&content)
+        .with_context(|| format!("failed to validate seed matrix manifest {}", args.manifest))?;
+
+    println!("Seed matrix manifest OK: {} entries", entries.len());
+    Ok(())
+}
+
+fn require_seed_name(index: usize, seed: &str) -> Result<(), SeedManifestError> {
+    if !seed.ends_with(".erofs") || !is_portable_path_component(seed) {
+        return Err(SeedManifestError::InvalidSeedName {
+            index,
+            seed: seed.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn require_seed_path(index: usize, path: &str, seed: &str) -> Result<(), SeedManifestError> {
+    if path.contains('\\')
+        || Path::new(path)
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(SeedManifestError::InvalidPath {
+            index,
+            field: "path",
+            path: path.to_string(),
+        });
+    }
+
+    let file_name = Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| SeedManifestError::InvalidPath {
+            index,
+            field: "path",
+            path: path.to_string(),
+        })?;
+    if file_name != seed {
+        return Err(SeedManifestError::PathSeedMismatch {
+            index,
+            seed: seed.to_string(),
+            path: path.to_string(),
+        });
+    }
+
+    Ok(())
+}
+
 fn require_nonempty(
     index: usize,
     field: &'static str,
@@ -161,6 +233,15 @@ fn is_feature_tag(value: &str) -> bool {
         return false;
     };
     !namespace.is_empty() && !tag_value.is_empty()
+}
+
+fn is_portable_path_component(value: &str) -> bool {
+    !value.is_empty()
+        && value != "."
+        && value != ".."
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
 #[cfg(test)]
@@ -210,6 +291,18 @@ mod tests {
     }
 
     #[test]
+    fn seed_matrix_manifest_accepts_current_directory_path() {
+        let manifest = VALID_MANIFEST.replace(
+            r#""path": "/tmp/seed-matrix/block-4096-plain.erofs""#,
+            r#""path": "./seed-matrix/block-4096-plain.erofs""#,
+        );
+
+        let entries = parse_seed_matrix_manifest(&manifest).unwrap();
+
+        assert_eq!(entries[0].path, "./seed-matrix/block-4096-plain.erofs");
+    }
+
+    #[test]
     fn seed_matrix_manifest_defaults_missing_requirement_to_required() {
         let manifest = VALID_MANIFEST.replace("    \"requirement\": \"required\",\n", "");
 
@@ -249,6 +342,59 @@ mod tests {
         assert!(matches!(
             error,
             SeedManifestError::InvalidSha256 { index: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn seed_matrix_manifest_rejects_seed_name_with_path_separator() {
+        let manifest = VALID_MANIFEST.replace(
+            r#""seed": "block-4096-plain.erofs""#,
+            r#""seed": "../block-4096-plain.erofs""#,
+        );
+
+        let error = parse_seed_matrix_manifest(&manifest).unwrap_err();
+
+        assert!(matches!(
+            error,
+            SeedManifestError::InvalidSeedName { index: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn seed_matrix_manifest_rejects_parent_directory_path() {
+        let manifest = VALID_MANIFEST.replace(
+            r#""path": "/tmp/seed-matrix/block-4096-plain.erofs""#,
+            r#""path": "/tmp/seed-matrix/../block-4096-plain.erofs""#,
+        );
+
+        let error = parse_seed_matrix_manifest(&manifest).unwrap_err();
+
+        assert!(matches!(
+            error,
+            SeedManifestError::InvalidPath {
+                index: 0,
+                field: "path",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn seed_matrix_manifest_rejects_path_seed_mismatch() {
+        let manifest = VALID_MANIFEST.replace(
+            r#""path": "/tmp/seed-matrix/block-4096-plain.erofs""#,
+            r#""path": "/tmp/seed-matrix/other.erofs""#,
+        );
+
+        let error = parse_seed_matrix_manifest(&manifest).unwrap_err();
+
+        assert!(matches!(
+            error,
+            SeedManifestError::PathSeedMismatch {
+                index: 0,
+                seed,
+                path,
+            } if seed == "block-4096-plain.erofs" && path == "/tmp/seed-matrix/other.erofs"
         ));
     }
 

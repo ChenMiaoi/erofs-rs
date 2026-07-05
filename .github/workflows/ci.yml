@@ -122,7 +122,8 @@ jobs:
           ./scripts/generate-seed-matrix.sh \
             --block-size 4096 \
             --compression none,lz4
-          python3 -m json.tool corpus/seeds/matrix/manifest.json >/dev/null
+          cargo run --locked -- seed-manifest \
+            --manifest corpus/seeds/matrix/manifest.json
 
       - name: Run erofs-utils safety smoke
         run: ./scripts/erofs-utils-safety-smoke.sh

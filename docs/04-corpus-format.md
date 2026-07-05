@@ -57,10 +57,18 @@ interpreted as `required` by the Rust validator.
 Feature tags use `namespace:value` strings. Prefer stable tags such as
 `block_size:4096`, `compression:lz4`, `layout:chunked`, `xattrs:user`,
 `xattrs:shared`, `xattrs:name_filter`, `xattrs:long_prefix`, and
-`dir_size:multiblock` over prose descriptions. The Rust manifest validator
-rejects feature tags without both a namespace and a value. It also rejects
-duplicate seed names, generated paths, SHA-256 digests, and duplicate feature
-tags within one entry.
+`dir_size:multiblock` over prose descriptions. Validate generated manifests
+with:
+
+```bash
+erofs-rs seed-manifest --manifest corpus/seeds/matrix/manifest.json
+```
+
+The Rust manifest validator rejects feature tags without both a namespace and
+a value. It also rejects duplicate seed names, generated paths, SHA-256
+digests, unsafe seed file names, paths with parent-directory components, paths
+whose file name does not match the `seed` field, and duplicate feature tags
+within one entry.
 
 ## Coverage Corpus Manifest
 
