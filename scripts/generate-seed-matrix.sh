@@ -109,8 +109,9 @@ append_manifest() {
     local path="$3"
     local sha256="$4"
     local source_profile="$5"
-    local mkfs_command="$6"
-    shift 6
+    local requirement="$6"
+    local mkfs_command="$7"
+    shift 7
     local features=("$@")
 
     if [ "$first_entry" -eq 0 ]; then
@@ -122,6 +123,7 @@ append_manifest() {
         printf '    "path": "%s",\n' "$(json_escape "$path")"
         printf '    "sha256": "%s",\n' "$sha256"
         printf '    "source_profile": "%s",\n' "$(json_escape "$source_profile")"
+        printf '    "requirement": "%s",\n' "$(json_escape "$requirement")"
         printf '    "mkfs": "%s",\n' "$(json_escape "$mkfs_command")"
         printf '    "mkfs_version": "%s",\n' "$(json_escape "$MKFS_VERSION")"
         printf '    "erofs_utils_git": "%s",\n' "$(json_escape "$EROFS_UTILS_GIT")"
@@ -210,8 +212,9 @@ run_mkfs() {
     local seed="$1"
     local source="$2"
     local source_profile="$3"
-    local features_csv="$4"
-    shift 4
+    local requirement="$4"
+    local features_csv="$5"
+    shift 5
     local args=("$@")
     local image="$OUT_DIR/$seed.erofs"
     local log="$OUT_DIR/$seed.mkfs.log"
@@ -222,7 +225,7 @@ run_mkfs() {
         sha="$(sha256_file "$image")"
         IFS=',' read -r -a features <<< "$features_csv"
         append_manifest "$FIRST_ENTRY" "$seed.erofs" "$image" "$sha" "$source_profile" \
-            "$MKFS ${args[*]} $image <source:${source_profile}>" "${features[@]}"
+            "$requirement" "$MKFS ${args[*]} $image <source:${source_profile}>" "${features[@]}"
         FIRST_ENTRY=0
         rm -f "$log"
         echo "Generated: $image ($(stat -c%s "$image") bytes)"
@@ -245,6 +248,7 @@ for block_size in "${BLOCK_SIZE_ARRAY[@]}"; do
     tmp="$(mktemp -d)"
     make_basic_root "$tmp"
     run_mkfs "block-${block_size}-plain" "$tmp" "basic" \
+        "required" \
         "block_size:${block_size},compression:none,layout:plain,dir_size:small" \
         "-b${block_size}"
     rm -rf "$tmp"
@@ -256,6 +260,7 @@ for compression in "${COMPRESSION_ARRAY[@]}"; do
     tmp="$(mktemp -d)"
     make_basic_root "$tmp"
     run_mkfs "compressed-${compression}-4k" "$tmp" "basic" \
+        "required" \
         "block_size:4096,compression:${compression},layout:plain,dir_size:small" \
         "-b4096" "-z${compression}"
     rm -rf "$tmp"
@@ -264,6 +269,7 @@ done
 tmp="$(mktemp -d)"
 make_large_dir_root "$tmp"
 run_mkfs "large-dir-multiblock-4k" "$tmp" "large_dir" \
+    "required" \
     "block_size:4096,compression:none,layout:plain,dir_size:multiblock" \
     "-b4096"
 rm -rf "$tmp"
@@ -271,6 +277,7 @@ rm -rf "$tmp"
 tmp="$(mktemp -d)"
 if make_xattr_root "$tmp"; then
     run_mkfs "xattr-user-4k" "$tmp" "xattr_user" \
+        "best_effort" \
         "block_size:4096,compression:none,xattrs:user,layout:plain,dir_size:small" \
         "-b4096"
 else
@@ -281,6 +288,7 @@ rm -rf "$tmp"
 tmp="$(mktemp -d)"
 if make_acl_root "$tmp"; then
     run_mkfs "acl-posix-4k" "$tmp" "acl_posix" \
+        "best_effort" \
         "block_size:4096,compression:none,acl:posix,layout:plain,dir_size:small" \
         "-b4096"
 else
@@ -291,6 +299,7 @@ rm -rf "$tmp"
 tmp="$(mktemp -d)"
 make_special_root "$tmp"
 run_mkfs "hardlink-fifo-symlink-4k" "$tmp" "special_files" \
+    "required" \
     "block_size:4096,compression:none,hardlink:true,fifo:true,symlink:true,layout:plain" \
     "-b4096"
 rm -rf "$tmp"
@@ -298,6 +307,7 @@ rm -rf "$tmp"
 tmp="$(mktemp -d)"
 if make_socket_root "$tmp"; then
     run_mkfs "socket-4k" "$tmp" "socket" \
+        "best_effort" \
         "block_size:4096,compression:none,socket:true,layout:plain,dir_size:small" \
         "-b4096"
 else
@@ -308,6 +318,7 @@ rm -rf "$tmp"
 tmp="$(mktemp -d)"
 if make_device_root "$tmp"; then
     run_mkfs "device-node-4k" "$tmp" "device_node" \
+        "best_effort" \
         "block_size:4096,compression:none,device:char,layout:plain,dir_size:small" \
         "-b4096"
 else
@@ -318,6 +329,7 @@ rm -rf "$tmp"
 tmp="$(mktemp -d)"
 make_basic_root "$tmp"
 run_mkfs "chunked-4k" "$tmp" "basic" \
+    "required" \
     "block_size:4096,compression:none,layout:chunked,chunksize:4096" \
     "-b4096" "--chunksize=4096"
 rm -rf "$tmp"
@@ -325,6 +337,7 @@ rm -rf "$tmp"
 tmp="$(mktemp -d)"
 make_basic_root "$tmp"
 run_mkfs "fragment-packed-lz4-4k" "$tmp" "basic" \
+    "required" \
     "block_size:4096,compression:lz4,layout:fragment,packed_inode:true" \
     "-b4096" "-zlz4" "-Efragments"
 rm -rf "$tmp"

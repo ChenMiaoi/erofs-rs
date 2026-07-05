@@ -8,10 +8,20 @@ pub struct SeedMatrixEntry {
     pub path: String,
     pub sha256: String,
     pub source_profile: String,
+    #[serde(default)]
+    pub requirement: SeedRequirement,
     pub mkfs: String,
     pub mkfs_version: String,
     pub erofs_utils_git: String,
     pub features: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum SeedRequirement {
+    #[default]
+    Required,
+    BestEffort,
 }
 
 #[derive(Debug, Error)]
@@ -90,7 +100,7 @@ fn is_sha256_digest(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{SeedManifestError, parse_seed_matrix_manifest};
+    use super::{SeedManifestError, SeedRequirement, parse_seed_matrix_manifest};
 
     const VALID_MANIFEST: &str = r#"[
   {
@@ -98,6 +108,7 @@ mod tests {
     "path": "/tmp/seed-matrix/block-4096-plain.erofs",
     "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     "source_profile": "basic",
+    "requirement": "required",
     "mkfs": "mkfs.erofs -b4096 /tmp/seed-matrix/block-4096-plain.erofs <source:basic>",
     "mkfs_version": "mkfs.erofs 1.8.0",
     "erofs_utils_git": "",
@@ -117,7 +128,29 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].seed, "block-4096-plain.erofs");
         assert_eq!(entries[0].source_profile, "basic");
+        assert_eq!(entries[0].requirement, SeedRequirement::Required);
         assert!(entries[0].features.contains(&"block_size:4096".to_string()));
+    }
+
+    #[test]
+    fn seed_matrix_manifest_accepts_best_effort_entries() {
+        let manifest = VALID_MANIFEST.replace(
+            r#""requirement": "required""#,
+            r#""requirement": "best_effort""#,
+        );
+
+        let entries = parse_seed_matrix_manifest(&manifest).unwrap();
+
+        assert_eq!(entries[0].requirement, SeedRequirement::BestEffort);
+    }
+
+    #[test]
+    fn seed_matrix_manifest_defaults_missing_requirement_to_required() {
+        let manifest = VALID_MANIFEST.replace("    \"requirement\": \"required\",\n", "");
+
+        let entries = parse_seed_matrix_manifest(&manifest).unwrap();
+
+        assert_eq!(entries[0].requirement, SeedRequirement::Required);
     }
 
     #[test]
