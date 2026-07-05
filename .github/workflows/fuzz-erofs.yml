@@ -36,7 +36,7 @@ jobs:
         run: rustup toolchain install nightly --profile minimal
 
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+        run: cargo +nightly install cargo-fuzz --locked
 
       - name: Install dependencies
         run: |
@@ -139,7 +139,7 @@ jobs:
           cmin_jsonl="corpus/rust-fuzz/cmin-summary.jsonl"
           cmin_summary="corpus/rust-fuzz/cmin-summary.json"
           : > "$cmin_jsonl"
-          cargo_fuzz_version="$(cargo fuzz --version)"
+          cargo_fuzz_version="$(cargo +nightly fuzz --version)"
           rustc_version="$(rustc +nightly --version)"
           targets=(
             superblock_parse
