@@ -458,7 +458,9 @@ panic, KASAN, KMSAN, KFENCE, UBSAN, lockdep, hung tasks, RCU stalls, and other
 dangerous kernel diagnostics as unsafe results before considering clean
 rejection or successful traversal markers. Passing `--artifact` records the
 image SHA-256 in the report, and `--artifact-sha256` makes the command fail if
-the replayed artifact no longer matches the expected digest.
+the replayed artifact no longer matches the expected digest. The report parser
+requires unsafe outcomes to include a dangerous pattern and rejects
+dangerous-pattern fields on non-unsafe outcomes.
 
 ## Continuous Integration
 

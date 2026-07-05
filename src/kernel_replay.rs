@@ -53,6 +53,8 @@ pub enum KernelReplayReportError {
     InvalidSha256 { field: &'static str, sha256: String },
     #[error("unsafe kernel replay report is missing dangerous_pattern")]
     MissingDangerousPattern,
+    #[error("non-unsafe kernel replay report includes dangerous_pattern")]
+    UnexpectedDangerousPattern,
 }
 
 pub fn build_kernel_replay_report(
@@ -93,12 +95,22 @@ pub fn validate_kernel_replay_report(
     if let Some(sha256) = &report.artifact_sha256 {
         require_sha256("artifact_sha256", sha256)?;
     }
+    if let Some(kernel_git) = &report.kernel_git {
+        require_nonempty("kernel_git", kernel_git)?;
+    }
     require_nonempty("message", &report.message)?;
     require_nonempty("signature", &report.signature)?;
-    if let Some(pattern) = &report.dangerous_pattern {
-        require_nonempty("dangerous_pattern", pattern)?;
-    } else if report.outcome == KernelReplayOutcome::Unsafe {
-        return Err(KernelReplayReportError::MissingDangerousPattern);
+    match (&report.outcome, &report.dangerous_pattern) {
+        (KernelReplayOutcome::Unsafe, Some(pattern)) => {
+            require_nonempty("dangerous_pattern", pattern)?;
+        }
+        (KernelReplayOutcome::Unsafe, None) => {
+            return Err(KernelReplayReportError::MissingDangerousPattern);
+        }
+        (_, Some(_)) => {
+            return Err(KernelReplayReportError::UnexpectedDangerousPattern);
+        }
+        (_, None) => {}
     }
     Ok(())
 }
@@ -467,6 +479,34 @@ mod tests {
         assert!(matches!(
             error,
             KernelReplayReportError::MissingDangerousPattern
+        ));
+    }
+
+    #[test]
+    fn kernel_replay_report_parser_rejects_non_unsafe_pattern() {
+        let report = VALID_REPORT.replace(
+            r#""dangerous_pattern": null"#,
+            r#""dangerous_pattern": "BUG:""#,
+        );
+
+        let error = parse_kernel_replay_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            KernelReplayReportError::UnexpectedDangerousPattern
+        ));
+    }
+
+    #[test]
+    fn kernel_replay_report_parser_rejects_empty_kernel_git() {
+        let report =
+            VALID_REPORT.replace(r#""kernel_git": "linux-test-rev""#, r#""kernel_git": """#);
+
+        let error = parse_kernel_replay_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            KernelReplayReportError::EmptyField("kernel_git")
         ));
     }
 
