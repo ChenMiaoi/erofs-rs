@@ -247,10 +247,10 @@ erofs-rs oracle \
     --report /tmp/oracle-report.txt
 ```
 
-The oracle report compares the Rust strict parser, `fsck.erofs`, and optional
-`dump.erofs -s` decisions. Disagreements are reported as interesting findings
-so parser/tool mismatches can be triaged separately from ordinary malformed
-image rejections.
+The oracle report compares the Rust strict parser, `fsck.erofs`, optional
+`dump.erofs -s`, and `fsck.erofs` after Rust checksum repair. Disagreements are
+reported as interesting findings so parser/tool/checksum mismatches can be
+triaged separately from ordinary malformed image rejections.
 
 ## Library usage
 

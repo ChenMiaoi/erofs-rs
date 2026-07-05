@@ -1,12 +1,14 @@
+use crate::checksum::fix_checksum;
 use crate::cli::OracleArgs;
 use crate::dirent::locate_dirents_in_image;
 use crate::fsck::{ExecLimits, FsckResult, run_fsck_with_limits};
-use crate::image::{Image, read_image};
+use crate::image::{Image, read_image, write_image};
 use crate::inode::locate_inodes;
 use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
+use tempfile::NamedTempFile;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum OracleStatus {
@@ -138,6 +140,31 @@ fn dump_check(args: &OracleArgs, input: &Path, limits: ExecLimits) -> Result<Ora
     Ok(tool_result_check("dump", &result))
 }
 
+fn checksum_repair_check(
+    args: &OracleArgs,
+    image: &Image,
+    limits: ExecLimits,
+) -> Result<OracleCheck> {
+    let mut repaired = image.clone();
+    if let Err(error) = fix_checksum(&mut repaired) {
+        return Ok(OracleCheck::rejected(
+            "checksum_repair_fsck",
+            "rejected_checksum_repair",
+            format!("checksum repair failed: {error}"),
+        ));
+    }
+
+    let temp = NamedTempFile::new().context("failed to create checksum repair temp image")?;
+    write_image(temp.path(), &repaired).with_context(|| {
+        format!(
+            "failed to write checksum repair temp image {}",
+            temp.path().display()
+        )
+    })?;
+    let result = run_fsck_with_limits(&args.fsck, temp.path(), &[], limits)?;
+    Ok(tool_result_check("checksum_repair_fsck", &result))
+}
+
 fn tool_result_check(name: &'static str, result: &FsckResult) -> OracleCheck {
     if result.timed_out {
         return OracleCheck::rejected(name, "timeout", "tool timed out");
@@ -190,12 +217,14 @@ fn render_report(input: &Path, checks: &[OracleCheck]) -> String {
     lines.extend([String::new(), "## Oracle Matrix".to_string(), String::new()]);
 
     let mut disagreements = 0usize;
-    for pair in [(0usize, 1usize), (0, 2), (1, 2)] {
-        let (line, disagrees) = agreement_line(&checks[pair.0], &checks[pair.1]);
-        if disagrees {
-            disagreements += 1;
+    for left_idx in 0..checks.len() {
+        for right_idx in (left_idx + 1)..checks.len() {
+            let (line, disagrees) = agreement_line(&checks[left_idx], &checks[right_idx]);
+            if disagrees {
+                disagreements += 1;
+            }
+            lines.push(line);
         }
-        lines.push(line);
     }
 
     lines.extend([
@@ -218,6 +247,8 @@ pub fn run(args: &OracleArgs) -> Result<()> {
         run_rust_parser(&image),
         fsck_check(args, input, limits).context("failed to run fsck oracle")?,
         dump_check(args, input, limits).context("failed to run dump oracle")?,
+        checksum_repair_check(args, &image, limits)
+            .context("failed to run checksum repair oracle")?,
     ];
     let report = render_report(input, &checks);
 

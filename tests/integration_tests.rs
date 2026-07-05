@@ -956,6 +956,8 @@ fn test_oracle_report_with_dump_check() {
     assert!(content.contains("rust_parser: accepted"));
     assert!(content.contains("fsck: accepted"));
     assert!(content.contains("dump: accepted"));
+    assert!(content.contains("checksum_repair_fsck: accepted"));
     assert!(content.contains("rust_parser_vs_fsck: agree"));
+    assert!(content.contains("fsck_vs_checksum_repair_fsck: agree"));
     assert!(content.contains("interesting_findings: 0"));
 }
