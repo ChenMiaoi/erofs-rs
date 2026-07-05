@@ -3,10 +3,10 @@ name = "erofs-rs"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-authors = ["Your Name <you@example.com>"]
+authors = ["Chen Miao <chenmiao.ku@gmail.com>"]
 license = "GPL-2.0+"
 description = "Advanced EROFS fuzzing and image injection tool written in Rust"
-repository = "https://github.com/yourusername/erofs-rs"
+repository = "https://github.com/ChenMiaoi/erofs-rs"
 exclude = [
     "build/",
     "corpus/",
