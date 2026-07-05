@@ -1,5 +1,6 @@
 # Rust build output
 /target/
+/fuzz/target/
 
 # Project-generated build and replay artifacts
 /build/
@@ -9,6 +10,8 @@
 /tests/fixtures/fsck.erofs
 
 # Logs, reports, and crash/fuzz byproducts
+/fuzz/artifacts/
+/fuzz/corpus/
 *.log
 *.profraw
 *.profdata
