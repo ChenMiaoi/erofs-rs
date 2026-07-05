@@ -121,7 +121,9 @@ Scheduled or self-hosted jobs can be broader:
 - Longer libFuzzer campaigns and corpus minimization.
 - Sanitized erofs-utils checks.
 - Cross-campaign bucket database generation.
-- Kernel replay over curated candidate artifacts.
+- Kernel replay over curated candidate artifacts. The scheduled kernel replay
+  workflow is manual/scheduled only, skips empty queues, and uploads
+  `erofs-rs.kernel-replay.v1` reports instead of joining the default PR gate.
 
 Do not make heavyweight kernel replay a default PR requirement unless the
 runner can provide a reproducible kernel artifact and stable runtime budget.

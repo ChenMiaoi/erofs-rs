@@ -21,6 +21,11 @@ Generated corpora should stay out of commits unless the change is a deliberate
 regression fixture or reviewed seed import. Large fuzzing outputs belong in CI
 artifacts, external storage, or finding bundles.
 
+`corpus/crashes/kernel-candidates/` is the input queue consumed by the scheduled
+kernel replay workflow. It is usually local or supplied on a replay branch. Keep
+entries small, curated, and accompanied by sidecars or finding bundles when
+they graduate from local triage to a reviewed report.
+
 ## Seed Matrix Manifest
 
 `scripts/generate-seed-matrix.sh` writes `manifest.json` beside generated seed

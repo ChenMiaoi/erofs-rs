@@ -404,6 +404,10 @@ make smoke
 make smoke-malformed MALFORMED_IMG=build/mutated.erofs
 ```
 
+Replay automation can also pass `MALFORMED_QEMU_LOG=...` and
+`MALFORMED_QEMU_EXIT_CODE=...` to write the QEMU console and raw exit status to
+per-candidate report paths.
+
 ### Kernel replay reports
 
 ```bash
@@ -445,16 +449,23 @@ CI is split by cost and feedback speed:
   `erofs-utils`, scans seeds and generated artifacts for tool crashes,
   timeouts, and sanitizer diagnostics, and uploads reports, minimized corpora,
   logs, and manifests.
+- `.github/workflows/kernel-replay.yml` runs weekly and by manual dispatch. It
+  skips quickly when `corpus/crashes/kernel-candidates/` is absent or empty.
+  When curated `.erofs` candidates are present on the checked-out ref, it
+  builds the local kernel and initramfs, replays each image with
+  `make smoke-malformed`, writes `erofs-rs.kernel-replay.v1` JSON reports, and
+  uploads the QEMU logs, exit codes, and replay summary.
 
 The `erofs-utils` safety checks do not prove the tools are safe. They report a
 bounded smoke result such as `tool crashes: 0`, `tool timeouts: 0`, and
 `sanitizer findings: 0`; normal rejection of malformed images is counted
 separately from unsafe tool behavior.
 
-Kernel replay is intentionally **not** run in CI because building the kernel is
-too heavy for the default GitHub Actions runner. Use the local `Makefile` for
-QEMU-based kernel testing. `erofs-rs kernel-report` turns captured QEMU logs
-into `erofs-rs.kernel-replay.v1` reports so local and scheduled replay jobs can
+Kernel replay is intentionally **not** part of pull request CI because building
+the kernel is too heavy for the default feedback loop. Use the local `Makefile`
+for QEMU-based kernel testing. Scheduled/manual replay uses the same
+`smoke-malformed` safety policy and `erofs-rs kernel-report` turns captured
+QEMU logs into `erofs-rs.kernel-replay.v1` reports so local and scheduled jobs
 share the same unsafe-kernel-output policy.
 
 Issue and pull request templates require reproducible commands, fuzz seeds or

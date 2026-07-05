@@ -21,6 +21,8 @@ EROFS_SRC := $(BUILD)/erofs-root
 EROFS_IMG := $(BUILD)/rootfs.erofs
 MKFS_EROFS := $(EROFS_UTILS_BUILD)/mkfs/mkfs.erofs
 EROFS_DRIVE := -drive file=$(EROFS_IMG),if=virtio,format=raw,readonly=on
+MALFORMED_QEMU_LOG ?= $(BUILD)/qemu-malformed.log
+MALFORMED_QEMU_EXIT_CODE ?=
 
 KERNEL_CMDLINE := console=ttyS0 earlyprintk=serial panic=-1
 QEMU_ARGS := \
@@ -141,14 +143,18 @@ smoke: all
 smoke-malformed: kernel initramfs
 	@test -n "$(MALFORMED_IMG)" || { echo "Usage: make smoke-malformed MALFORMED_IMG=<path>"; exit 1; }
 	@test -f "$(MALFORMED_IMG)" || { echo "Malformed image not found: $(MALFORMED_IMG)"; exit 1; }
-	@mkdir -p $(BUILD)
+	@mkdir -p "$(BUILD)" "$(dir $(MALFORMED_QEMU_LOG))"
 	@set -o pipefail; \
 	source scripts/kernel-replay-common.sh; \
 	MALFORMED_DRIVE="-drive file=$(MALFORMED_IMG),if=virtio,format=raw,readonly=on"; \
-	timeout 80s $(QEMU) $(QEMU_ARGS) $$MALFORMED_DRIVE 2>&1 | tee $(BUILD)/qemu-malformed.log || rc=$$?; \
+	timeout 80s $(QEMU) $(QEMU_ARGS) $$MALFORMED_DRIVE 2>&1 | tee "$(MALFORMED_QEMU_LOG)" || rc=$$?; \
 	qemu_rc="$${rc:-0}"; \
+	if [ -n "$(MALFORMED_QEMU_EXIT_CODE)" ]; then \
+		mkdir -p "$(dir $(MALFORMED_QEMU_EXIT_CODE))"; \
+		printf '%s\n' "$$qemu_rc" > "$(MALFORMED_QEMU_EXIT_CODE)"; \
+	fi; \
 	if [ "$$qemu_rc" != 0 ] && [ "$$qemu_rc" != 124 ]; then exit "$$qemu_rc"; fi; \
-	classify_dmesg "$(BUILD)/qemu-malformed.log" "$$qemu_rc"; \
+	classify_dmesg "$(MALFORMED_QEMU_LOG)" "$$qemu_rc"; \
 	echo "$$REPLAY_RESULT: $$REPLAY_MSG"; \
 	if [ "$$REPLAY_RESULT" != "REJECTED" ]; then exit 1; fi
 

@@ -1,0 +1,151 @@
+name: Scheduled Kernel Replay
+
+on:
+  schedule:
+    # Run weekly on Monday at 03:00 UTC, separate from userspace fuzzing.
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  kernel-replay:
+    name: Replay curated kernel candidates
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Detect replay candidates
+        id: candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          queue="corpus/crashes/kernel-candidates"
+          out_dir="kernel-replay"
+          mkdir -p "$out_dir"
+
+          if [ ! -d "$queue" ]; then
+            echo "has_candidates=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "No kernel replay queue found at $queue."
+              echo "Add curated .erofs images on a replay branch to run QEMU checks."
+            } > "$out_dir/summary.txt"
+            exit 0
+          fi
+
+          mapfile -t candidates < <(find "$queue" -type f -name '*.erofs' | sort)
+          if [ "${#candidates[@]}" -eq 0 ]; then
+            echo "has_candidates=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "No .erofs kernel replay candidates found in $queue."
+              echo "Add curated images before expecting QEMU replay reports."
+            } > "$out_dir/summary.txt"
+            exit 0
+          fi
+
+          echo "has_candidates=true" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "${candidates[@]}" > "$out_dir/candidates.txt"
+          printf 'Found %s kernel replay candidate(s).\n' "${#candidates[@]}" \
+            > "$out_dir/summary.txt"
+
+      - name: Initialize shallow submodules
+        if: steps.candidates.outputs.has_candidates == 'true'
+        run: |
+          git submodule sync --recursive
+          git submodule update --init --recursive --depth=1
+
+      - name: Install Rust toolchain
+        if: steps.candidates.outputs.has_candidates == 'true'
+        uses: dtolnay/rust-toolchain@1.85.0
+
+      - name: Install native dependencies
+        if: steps.candidates.outputs.has_candidates == 'true'
+        run: make apt-deps
+
+      - name: Build replay tools
+        if: steps.candidates.outputs.has_candidates == 'true'
+        run: |
+          cargo build --locked --release
+          make kernel initramfs
+
+      - name: Replay kernel candidates
+        if: steps.candidates.outputs.has_candidates == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          report_dir="kernel-replay/reports"
+          mkdir -p "$report_dir"
+          kernel_git="$(git -C vendor/linux rev-parse HEAD 2>/dev/null || true)"
+          kernel_args=()
+          if [ -n "$kernel_git" ]; then
+            kernel_args=(--kernel-git "$kernel_git")
+          fi
+          failures=0
+
+          {
+            echo "| candidate | replay | qemu_rc | report |"
+            echo "|---|---|---:|---|"
+          } > kernel-replay/replay-table.md
+
+          while IFS= read -r img; do
+            sha="$(sha256sum "$img" | awk '{print $1}')"
+            stem="$(basename "${img%.erofs}")"
+            safe_stem="$(printf '%s' "$stem" | tr -c 'A-Za-z0-9._-' '_')"
+            prefix="${safe_stem}-${sha:0:12}"
+            qemu_log="$report_dir/${prefix}.qemu.log"
+            qemu_rc_file="$report_dir/${prefix}.qemu.rc"
+            json_report="$report_dir/${prefix}.kernel-report.json"
+
+            replay="rejected"
+            if ! make -o kernel -o initramfs smoke-malformed \
+              MALFORMED_IMG="$img" \
+              MALFORMED_QEMU_LOG="$qemu_log" \
+              MALFORMED_QEMU_EXIT_CODE="$qemu_rc_file"; then
+              replay="needs-triage"
+              failures=$((failures + 1))
+            fi
+
+            qemu_rc="$(cat "$qemu_rc_file" 2>/dev/null || printf '1')"
+            report="written"
+            if ! ./target/release/erofs-rs kernel-report \
+              --dmesg "$qemu_log" \
+              --qemu-exit-code "$qemu_rc" \
+              --artifact "$img" \
+              --artifact-sha256 "$sha" \
+              "${kernel_args[@]}" \
+              --output "$json_report"; then
+              report="failed"
+              failures=$((failures + 1))
+            fi
+
+            printf '| `%s` | %s | %s | %s |\n' \
+              "$img" "$replay" "$qemu_rc" "$report" \
+              >> kernel-replay/replay-table.md
+          done < kernel-replay/candidates.txt
+
+          {
+            cat kernel-replay/summary.txt
+            echo
+            cat kernel-replay/replay-table.md
+            echo
+            printf 'Replay failures requiring triage: %s\n' "$failures"
+          } > kernel-replay/summary.md
+
+          cat kernel-replay/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload kernel replay reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kernel-replay-reports
+          path: kernel-replay/
+          retention-days: 14
