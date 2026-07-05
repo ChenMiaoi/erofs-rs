@@ -430,6 +430,8 @@ fn test_mutate_superblock() {
     assert!(fs::read_dir(&out_dir).unwrap().count() > 0);
     let content = fs::read_to_string(&manifest).unwrap();
     assert!(content.contains("# Families: superblock="));
+    assert!(content.contains("# Parser: "));
+    assert!(content.contains("# Oracle: "));
 }
 
 #[test]

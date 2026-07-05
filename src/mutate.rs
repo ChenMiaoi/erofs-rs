@@ -4,6 +4,7 @@ use crate::dirent::locate_dirents_in_image;
 use crate::fsck::{classify_fsck_result, run_fsck};
 use crate::image::{EROFS_SUPER_OFFSET, FieldWidth, Image, read_image, write_image};
 use crate::inode::{is_extended_inode, locate_inodes};
+use crate::parse::{ParseMode, parse_image};
 use anyhow::{Result, bail};
 use std::collections::HashMap;
 use std::fs;
@@ -480,6 +481,7 @@ struct MutatedEntry {
     field_name: String,
     mutation_name: String,
     value_hex: String,
+    parser_outcome: String,
     classification: String,
     reason: String,
 }
@@ -489,6 +491,21 @@ fn seed_name(input: &str) -> String {
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "seed".to_string())
+}
+
+fn parser_outcome(image: &Image) -> String {
+    let strict_accepted = parse_image(image, ParseMode::Strict).is_ok();
+    match parse_image(image, ParseMode::FuzzTolerant) {
+        Ok(report) => match (strict_accepted, report.errors.is_empty()) {
+            (true, true) => "strict_accepted_tolerant_clean",
+            (true, false) => "strict_accepted_tolerant_errors",
+            (false, true) => "strict_rejected_tolerant_clean",
+            (false, false) => "strict_rejected_tolerant_errors",
+        }
+        .to_string(),
+        Err(_) if strict_accepted => "strict_accepted_tolerant_failed".to_string(),
+        Err(_) => "strict_rejected_tolerant_failed".to_string(),
+    }
 }
 
 fn mutate_superblock(image: &Image, args: &MutateArgs) -> Result<Vec<MutatedEntry>> {
@@ -518,6 +535,7 @@ fn mutate_superblock(image: &Image, args: &MutateArgs) -> Result<Vec<MutatedEntr
             let result = run_fsck(&args.fsck, &output_path, &[])?;
             let (classification, reason) =
                 classify_fsck_result(result.exit_code, &result.stderr, &result.stdout);
+            let parser_outcome = parser_outcome(&mutated);
 
             entries.push(MutatedEntry {
                 output_name,
@@ -526,6 +544,7 @@ fn mutate_superblock(image: &Image, args: &MutateArgs) -> Result<Vec<MutatedEntr
                 field_name: def.field_name.to_string(),
                 mutation_name: mutation_name.to_string(),
                 value_hex: format!("0x{new_value:0width$X}", width = def.width.bytes() * 2),
+                parser_outcome,
                 classification: classification.to_string(),
                 reason: reason.to_string(),
             });
@@ -583,6 +602,7 @@ fn mutate_inodes(image: &Image, args: &MutateArgs) -> Result<Vec<MutatedEntry>> 
                 let result = run_fsck(&args.fsck, &output_path, &[])?;
                 let (classification, reason) =
                     classify_fsck_result(result.exit_code, &result.stderr, &result.stdout);
+                let parser_outcome = parser_outcome(&mutated);
 
                 entries.push(MutatedEntry {
                     output_name,
@@ -591,6 +611,7 @@ fn mutate_inodes(image: &Image, args: &MutateArgs) -> Result<Vec<MutatedEntry>> 
                     field_name: def.field_name.to_string(),
                     mutation_name: mutation_name.to_string(),
                     value_hex: format!("0x{new_value:0width$X}", width = width.bytes() * 2),
+                    parser_outcome,
                     classification: classification.to_string(),
                     reason: reason.to_string(),
                 });
@@ -652,6 +673,7 @@ fn mutate_dirents(image: &Image, args: &MutateArgs) -> Result<Vec<MutatedEntry>>
                 let result = run_fsck(&args.fsck, &output_path, &[])?;
                 let (classification, reason) =
                     classify_fsck_result(result.exit_code, &result.stderr, &result.stdout);
+                let parser_outcome = parser_outcome(&mutated);
 
                 entries.push(MutatedEntry {
                     output_name,
@@ -660,6 +682,7 @@ fn mutate_dirents(image: &Image, args: &MutateArgs) -> Result<Vec<MutatedEntry>>
                     field_name: def.field_name.to_string(),
                     mutation_name: mutation_name.to_string(),
                     value_hex: format!("0x{new_value:0width$X}", width = def.width.bytes() * 2),
+                    parser_outcome,
                     classification: classification.to_string(),
                     reason: reason.to_string(),
                 });
@@ -683,9 +706,11 @@ fn write_manifest<P: AsRef<Path>>(
     let seed = seed_name(&args.input);
     let mut counts: HashMap<String, usize> = HashMap::new();
     let mut family_counts: HashMap<String, usize> = HashMap::new();
+    let mut parser_counts: HashMap<String, usize> = HashMap::new();
     for e in entries {
         *counts.entry(e.classification.clone()).or_insert(0) += 1;
         *family_counts.entry(e.family.clone()).or_insert(0) += 1;
+        *parser_counts.entry(e.parser_outcome.clone()).or_insert(0) += 1;
     }
 
     let mut lines = vec![
@@ -722,12 +747,19 @@ fn write_manifest<P: AsRef<Path>>(
         .collect::<Vec<_>>()
         .join(", ");
     lines.push(format!("# Summary: total={}, {summary}", entries.len()));
+    lines.push(format!("# Oracle: {summary}"));
     let families = sorted_counts(&family_counts)
         .into_iter()
         .map(|(family, count)| format!("{family}={count}"))
         .collect::<Vec<_>>()
         .join(", ");
     lines.push(format!("# Families: {families}"));
+    let parser = sorted_counts(&parser_counts)
+        .into_iter()
+        .map(|(outcome, count)| format!("{outcome}={count}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    lines.push(format!("# Parser: {parser}"));
 
     fs::write(path.as_ref(), lines.join("\n") + "\n").map_err(|e| {
         anyhow::anyhow!("failed to write manifest {}: {e}", path.as_ref().display())
