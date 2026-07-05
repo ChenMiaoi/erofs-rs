@@ -1,7 +1,7 @@
 use erofs_rs::{
     checksum::{crc32c, fix_checksum},
     dirent::locate_dirents_in_image,
-    fsck::{run_fsck, run_fsck_with_timeout},
+    fsck::{ExecLimits, run_fsck, run_fsck_with_limits, run_fsck_with_timeout},
     image::{EROFS_SUPER_OFFSET, FieldWidth, Image, read_image, write_image},
     inode::locate_inodes,
 };
@@ -144,6 +144,42 @@ fn test_fsck_timeout_classified() {
     )
     .unwrap();
     assert_eq!(result.classification, "rejected_timeout");
+    assert!(result.timed_out);
+}
+
+#[test]
+fn test_fsck_output_is_capped() {
+    let tmp = TempDir::new().unwrap();
+    let script = tmp.path().join("noisy-fsck.sh");
+    fs::write(
+        &script,
+        "#!/bin/sh\n\
+         i=0\n\
+         while [ \"$i\" -lt 200 ]; do printf x; i=$((i + 1)); done\n\
+         i=0\n\
+         while [ \"$i\" -lt 200 ]; do printf y >&2; i=$((i + 1)); done\n\
+         exit 1\n",
+    )
+    .unwrap();
+    let mut perms = fs::metadata(&script).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&script, perms).unwrap();
+
+    let result = run_fsck_with_limits(
+        &script,
+        fixture("single.erofs"),
+        &[],
+        ExecLimits {
+            timeout: Duration::from_secs(1),
+            max_output_bytes: 32,
+        },
+    )
+    .unwrap();
+
+    assert!(result.stdout_truncated);
+    assert!(result.stderr_truncated);
+    assert!(result.stdout.contains("truncated to 32 bytes"));
+    assert!(result.stderr.contains("truncated to 32 bytes"));
 }
 
 #[test]

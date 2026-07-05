@@ -1,6 +1,6 @@
 use crate::checksum::fix_checksum;
 use crate::cli::{FuzzArgs, FuzzStrategy};
-use crate::fsck::{classify_fsck_result, run_fsck};
+use crate::fsck::{ExecLimits, run_fsck_with_limits};
 use crate::image::{EROFS_SUPER_OFFSET, FieldWidth, Image, read_image, write_image};
 use anyhow::{Result, bail};
 use rand::rngs::StdRng;
@@ -53,6 +53,10 @@ struct FuzzArtifactSidecar {
     artifact_path: String,
     mutations: Vec<MutationRecord>,
     commands: FuzzArtifactCommands,
+    fsck_exit_code: i32,
+    fsck_timed_out: bool,
+    stdout_truncated: bool,
+    stderr_truncated: bool,
     classification: String,
     reason: String,
     stdout_path: String,
@@ -448,6 +452,10 @@ struct FuzzSidecarInput<'a> {
     artifact_sha256: &'a str,
     artifact_path: &'a Path,
     mutations: Vec<MutationRecord>,
+    fsck_exit_code: i32,
+    fsck_timed_out: bool,
+    stdout_truncated: bool,
+    stderr_truncated: bool,
     classification: &'a str,
     reason: &'a str,
     stdout_path: &'a Path,
@@ -470,6 +478,10 @@ fn build_fuzz_sidecar(input: FuzzSidecarInput<'_>) -> FuzzArtifactSidecar {
         commands: FuzzArtifactCommands {
             fsck: fsck_command(&input.args.fsck, input.artifact_path),
         },
+        fsck_exit_code: input.fsck_exit_code,
+        fsck_timed_out: input.fsck_timed_out,
+        stdout_truncated: input.stdout_truncated,
+        stderr_truncated: input.stderr_truncated,
         classification: input.classification.to_string(),
         reason: input.reason.to_string(),
         stdout_path: input.stdout_path.display().to_string(),
@@ -587,6 +599,10 @@ fn run_mutation_fuzz(args: &FuzzArgs) -> Result<()> {
     println!("RNG seed: {rng_seed}");
     let start = Instant::now();
     let max_duration = Duration::from_secs(args.max_time);
+    let fsck_limits = ExecLimits {
+        timeout: Duration::from_secs(args.exec_timeout),
+        max_output_bytes: args.max_output_bytes,
+    };
 
     let mut seen_hashes = HashSet::new();
     let mut runs: Vec<FuzzRun> = Vec::new();
@@ -614,9 +630,9 @@ fn run_mutation_fuzz(args: &FuzzArgs) -> Result<()> {
 
         let artifact_path =
             save_artifact(&mutated, Path::new(&args.output_dir), iteration, seed_name)?;
-        let result = run_fsck(&args.fsck, &artifact_path, &[])?;
-        let (classification, reason) =
-            classify_fsck_result(result.exit_code, &result.stderr, &result.stdout);
+        let result = run_fsck_with_limits(&args.fsck, &artifact_path, &[], fsck_limits)?;
+        let classification = result.classification.clone();
+        let reason = result.reason.clone();
 
         let stdout_path = artifact_text_path(&artifact_path, "stdout");
         let stderr_path = artifact_text_path(&artifact_path, "stderr");
@@ -632,8 +648,12 @@ fn run_mutation_fuzz(args: &FuzzArgs) -> Result<()> {
             artifact_sha256: &hash,
             artifact_path: &artifact_path,
             mutations,
-            classification,
-            reason,
+            fsck_exit_code: result.exit_code,
+            fsck_timed_out: result.timed_out,
+            stdout_truncated: result.stdout_truncated,
+            stderr_truncated: result.stderr_truncated,
+            classification: &classification,
+            reason: &reason,
             stdout_path: &stdout_path,
             stderr_path: &stderr_path,
         });
@@ -642,8 +662,8 @@ fn run_mutation_fuzz(args: &FuzzArgs) -> Result<()> {
         runs.push(FuzzRun {
             iteration,
             seed_name: seed_name.clone(),
-            classification: classification.to_string(),
-            reason: reason.to_string(),
+            classification: classification.clone(),
+            reason: reason.clone(),
         });
 
         if iteration % 10 == 0 {
@@ -736,6 +756,8 @@ mod tests {
             seed: Some(123),
             no_tui: true,
             strategy: FuzzStrategy::Mutation,
+            exec_timeout: 30,
+            max_output_bytes: 1024,
         };
         let artifact_path = Path::new("out/fuzz_seed_iter1.erofs");
         let stdout_path = Path::new("out/fuzz_seed_iter1.stdout.txt");
@@ -759,6 +781,10 @@ mod tests {
             artifact_sha256: "artifacthash",
             artifact_path,
             mutations,
+            fsck_exit_code: 1,
+            fsck_timed_out: false,
+            stdout_truncated: false,
+            stderr_truncated: true,
             classification: "rejected_invalid",
             reason: "fsck rejected as invalid",
             stdout_path,
@@ -770,6 +796,8 @@ mod tests {
         assert_eq!(decoded, sidecar);
         assert_eq!(decoded.schema, FUZZ_ARTIFACT_SCHEMA);
         assert_eq!(decoded.strategy, "mutation");
+        assert_eq!(decoded.fsck_exit_code, 1);
+        assert!(decoded.stderr_truncated);
         assert_eq!(decoded.mutations[0].old.as_deref(), Some("0x00"));
     }
 

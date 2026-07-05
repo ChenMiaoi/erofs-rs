@@ -18,7 +18,8 @@ standalone malformed-image construction.
 - **Corpus management**: deduplicate artifacts by SHA-256 and classify them into
   behavior-based categories with a summary report.
 - **Mutation-based fuzzer** that runs random combinations of bit/byte/word
-  mutations and structured field mutations against a seed corpus.
+  mutations and structured field mutations against a seed corpus, with
+  per-artifact JSON sidecars for reproduction.
 - **Image introspection** (`info`) to print superblock, inode, and dirent
   metadata.
 
@@ -143,6 +144,8 @@ erofs-rs fuzz \
     --input-dir corpus/seeds/ \
     --output-dir /tmp/fuzz-artifacts/ \
     --max-time 60 \
+    --exec-timeout 30 \
+    --max-output-bytes 1048576 \
     --seed 12345 \
     --fsck build/erofs-utils/fsck/fsck.erofs
 ```
@@ -150,12 +153,19 @@ erofs-rs fuzz \
 If `--seed` is omitted, the generated fuzzing report records the seed that was
 used so the run can be replayed.
 
+Each unique `fuzz_*.erofs` artifact is written with a matching JSON sidecar and
+captured fsck output files. The sidecar records the tool version, RNG seed,
+iteration, strategy, seed and artifact SHA-256 digests, mutation records, fsck
+command, classification, exit status, timeout state, and output truncation
+flags. `--exec-timeout` controls the per-artifact fsck timeout, and
+`--max-output-bytes` caps the retained bytes for each fsck output stream.
+
 When stdout is an interactive terminal, `fuzz` opens a post-run TUI dashboard
-with the RNG seed, campaign totals, fsck finding count, classification mix,
-recent representative runs, and report path. The finding count is the number of
-unique artifacts that were not cleanly accepted by fsck; use the classification
-mix to separate expected malformed-image rejections from more interesting
-timeouts or tool errors. Use `--no-tui` for plain script-friendly output.
+with the RNG seed, campaign totals, actionable finding count, classification
+mix, recent representative runs, and report path. Expected malformed-image
+rejections such as checksum, invalid, corruption, and read errors are reported
+separately from interesting or unsafe findings. Use `--no-tui` for plain
+script-friendly output.
 
 ## Library usage
 

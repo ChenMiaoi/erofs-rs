@@ -18,6 +18,9 @@ pub(crate) mod tui;
 
 pub use checksum::{crc32c, fix_checksum};
 pub use dirent::{Dirent, locate_dirents_in_image};
-pub use fsck::{FsckResult, classify_fsck_result, run_fsck, run_fsck_with_timeout};
+pub use fsck::{
+    ExecLimits, FsckResult, classify_fsck_result, run_fsck, run_fsck_with_limits,
+    run_fsck_with_timeout,
+};
 pub use image::{FieldWidth, Image, Superblock, read_image, write_image};
 pub use inode::{Inode, locate_inodes};

@@ -109,6 +109,18 @@ pub struct FuzzArgs {
         help = "Fuzzing strategy"
     )]
     pub strategy: FuzzStrategy,
+    #[arg(
+        long,
+        default_value = "30",
+        help = "Per-artifact fsck timeout in seconds"
+    )]
+    pub exec_timeout: u64,
+    #[arg(
+        long,
+        default_value = "1048576",
+        help = "Maximum bytes retained from each fsck output stream"
+    )]
+    pub max_output_bytes: usize,
 }
 
 #[derive(Parser, Debug)]
