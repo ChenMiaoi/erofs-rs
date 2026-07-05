@@ -335,11 +335,12 @@ artifact. It also uploads `corpus/rust-fuzz/cmin-summary.json`, a
 machine-readable `erofs-rs.cmin-summary.v1` report with cargo-fuzz version,
 nightly rustc version, engine flags, per-target corpus counts before and after
 minimization, aggregate before/after/removed counts, artifact counts, and log
-paths. The Rust library rejects unknown cmin-summary schemas, empty command
-flag lists, duplicate targets, mismatched aggregate counts, and target summaries
-where `cmin` increased the unit count before later automation consumes it. It
-also rejects target names or corpus, artifact, and log paths that do not match
-the weekly `corpus/rust-fuzz/<target>/` layout.
+paths. Use `erofs-rs cmin-summary --report ...` to validate this report before
+later automation consumes it. The Rust validator rejects unknown
+cmin-summary schemas, empty command flag lists, duplicate targets, mismatched
+aggregate counts, and target summaries where `cmin` increased the unit count.
+It also rejects target names or corpus, artifact, and log paths that do not
+match the weekly `corpus/rust-fuzz/<target>/` layout.
 
 ### Seed matrix generation
 

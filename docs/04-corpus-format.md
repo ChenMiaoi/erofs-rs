@@ -120,12 +120,18 @@ flags, and one entry per target with:
 
 Use this report with `coverage-manifest.json` to review whether a minimized
 unit should be imported into `corpus/seeds/minimized/<target>/`. The Rust
-library parser rejects unknown schemas, empty required fields or flag lists,
-duplicate targets, and summaries where a target has more corpus units after
-`cmin` than before. When aggregate count fields are present, they must match
-the per-target rows. Target names must be single portable path components, and
-the corpus, artifact, and log paths must match the weekly
-`corpus/rust-fuzz/<target>/` layout.
+validator can be run with:
+
+```bash
+erofs-rs cmin-summary --report corpus/rust-fuzz/cmin-summary.json
+```
+
+It rejects unknown schemas, empty required fields or flag lists, duplicate
+targets, and summaries where a target has more corpus units after `cmin` than
+before. When aggregate count fields are present, they must match the per-target
+rows. Target names must be single portable path components, and the corpus,
+artifact, and log paths must match the weekly `corpus/rust-fuzz/<target>/`
+layout.
 
 ## Fuzz Campaign Artifacts
 

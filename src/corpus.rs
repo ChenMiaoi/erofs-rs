@@ -1,4 +1,4 @@
-use crate::cli::{CorpusArgs, CorpusMode};
+use crate::cli::{CminSummaryArgs, CorpusArgs, CorpusMode};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1369,15 +1369,25 @@ pub fn run(args: &CorpusArgs) -> Result<()> {
     Ok(())
 }
 
+pub fn run_cmin_summary(args: &CminSummaryArgs) -> Result<()> {
+    let content = fs::read_to_string(&args.report)
+        .with_context(|| format!("failed to read cmin summary report {}", args.report))?;
+    let report = parse_cmin_summary_report(&content)
+        .with_context(|| format!("failed to validate cmin summary report {}", args.report))?;
+
+    println!("Cmin summary OK: {} target(s)", report.targets.len());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         CMIN_SUMMARY_SCHEMA, COVERAGE_MANIFEST_SCHEMA, CminSummaryError, CoverageManifestError,
         DEFAULT_COVERAGE_TARGET, collect_manifest_artifacts, file_hash, infer_coverage_target,
         lifecycle_bucket, parse_cmin_summary_report, parse_coverage_manifest, read_manifest,
-        should_collect_coverage_file,
+        run_cmin_summary, should_collect_coverage_file,
     };
-    use crate::cli::{CorpusArgs, CorpusMode};
+    use crate::cli::{CminSummaryArgs, CorpusArgs, CorpusMode};
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
@@ -1791,6 +1801,19 @@ mod tests {
         assert_eq!(report.total_before_cmin_units, Some(3));
         assert_eq!(report.total_removed_units, Some(1));
         assert_eq!(report.targets[0].target, "superblock_parse");
+    }
+
+    #[test]
+    fn cmin_summary_command_accepts_valid_report() {
+        let tmp = TempDir::new().unwrap();
+        let report = tmp.path().join("cmin-summary.json");
+        fs::write(&report, VALID_CMIN_SUMMARY).unwrap();
+
+        let args = CminSummaryArgs {
+            report: report.to_string_lossy().to_string(),
+        };
+
+        run_cmin_summary(&args).unwrap();
     }
 
     #[test]

@@ -13,6 +13,7 @@ fn main() -> Result<()> {
         Commands::Inject(args) => inject::run(args),
         Commands::Mutate(args) => mutate::run(args),
         Commands::Corpus(args) => corpus::run(args),
+        Commands::CminSummary(args) => corpus::run_cmin_summary(args),
         Commands::Fuzz(args) => fuzz::run(args),
         Commands::Replay(args) => replay::run(args),
         Commands::Bundle(args) => bundle::run(args),

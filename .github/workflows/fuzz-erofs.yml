@@ -227,6 +227,7 @@ jobs:
               handle.write("\n")
           PY
           rm -f "$cmin_jsonl"
+          ./target/release/erofs-rs cmin-summary --report "$cmin_summary"
 
       - name: Collect minimized Rust fuzz corpus
         run: |

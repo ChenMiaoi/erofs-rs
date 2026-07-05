@@ -16,6 +16,8 @@ pub enum Commands {
     Mutate(MutateArgs),
     /// Manage and classify a fuzzing corpus.
     Corpus(CorpusArgs),
+    /// Validate a cargo-fuzz cmin summary report.
+    CminSummary(CminSummaryArgs),
     /// Run a mutation-based fuzzing campaign.
     Fuzz(FuzzArgs),
     /// Replay a fuzz artifact from its JSON sidecar.
@@ -128,6 +130,12 @@ pub enum CorpusMode {
     Coverage,
     /// Preserve every manifest artifact while grouping by classification.
     Classification,
+}
+
+#[derive(Parser, Debug)]
+pub struct CminSummaryArgs {
+    #[arg(long, help = "Path to a generated cmin-summary JSON report")]
+    pub report: String,
 }
 
 #[derive(Parser, Debug)]
