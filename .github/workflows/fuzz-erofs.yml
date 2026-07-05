@@ -121,6 +121,7 @@ jobs:
             inode_locate
             dirent_locate
             checksum_fix_no_panic
+            info_no_panic
             xattr_parse
             chunk_parse
             compression_parse

@@ -200,6 +200,7 @@ cargo fuzz run superblock_parse -- -runs=1000
 cargo fuzz run inode_locate -- -runs=1000
 cargo fuzz run dirent_locate -- -runs=1000
 cargo fuzz run checksum_fix_no_panic -- -runs=1000
+cargo fuzz run info_no_panic -- -runs=1000
 cargo fuzz run xattr_parse -- -runs=1000
 cargo fuzz run chunk_parse -- -runs=1000
 cargo fuzz run compression_parse -- -runs=1000
@@ -207,7 +208,8 @@ cargo fuzz run compression_parse -- -runs=1000
 
 The initial targets cover superblock parsing, inode location, directory-entry
 location, inline xattr parsing, chunk metadata parsing, compression map header
-parsing, and checksum repair. Generated libFuzzer corpora and artifacts under
+parsing, checksum repair, and the strict `info` traversal path. Generated
+libFuzzer corpora and artifacts under
 `fuzz/corpus/`, `fuzz/artifacts/`, and `fuzz/target/` are local byproducts and
 should not be committed unless a minimized regression is intentionally added.
 

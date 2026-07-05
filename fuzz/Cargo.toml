@@ -42,6 +42,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "info_no_panic"
+path = "fuzz_targets/info_no_panic.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "xattr_parse"
 path = "fuzz_targets/xattr_parse.rs"
 test = false
