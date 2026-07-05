@@ -192,6 +192,21 @@ location, and checksum repair. Generated libFuzzer corpora and artifacts under
 `fuzz/corpus/`, `fuzz/artifacts/`, and `fuzz/target/` are local byproducts and
 should not be committed unless a minimized regression is intentionally added.
 
+### `oracle` – userspace differential checks
+
+```bash
+erofs-rs oracle \
+    --input corpus/seeds/single.erofs \
+    --fsck build/erofs-utils/fsck/fsck.erofs \
+    --dump build/erofs-utils/dump/dump.erofs \
+    --report /tmp/oracle-report.txt
+```
+
+The oracle report compares the Rust strict parser, `fsck.erofs`, and optional
+`dump.erofs -s` decisions. Disagreements are reported as interesting findings
+so parser/tool mismatches can be triaged separately from ordinary malformed
+image rejections.
+
 ## Library usage
 
 The crate can also be used as a library:

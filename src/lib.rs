@@ -14,6 +14,7 @@ pub mod info;
 pub mod inject;
 pub mod inode;
 pub mod mutate;
+pub mod oracle;
 pub(crate) mod tui;
 
 pub use checksum::{crc32c, fix_checksum};

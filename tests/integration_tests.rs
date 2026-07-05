@@ -392,3 +392,28 @@ fn test_corpus_manager() {
 
     assert!(report.exists());
 }
+
+#[test]
+fn test_oracle_report_with_dump_check() {
+    let tmp = TempDir::new().unwrap();
+    let report = tmp.path().join("oracle-report.txt");
+
+    let args = erofs_rs::cli::OracleArgs {
+        input: fixture("single.erofs").to_string_lossy().to_string(),
+        fsck: fsck_path().to_string_lossy().to_string(),
+        dump: Some("/bin/true".to_string()),
+        report: Some(report.to_string_lossy().to_string()),
+        exec_timeout: 1,
+        max_output_bytes: 1024,
+        no_kill_process_group: false,
+        rss_limit_mb: None,
+    };
+    erofs_rs::oracle::run(&args).unwrap();
+
+    let content = fs::read_to_string(&report).unwrap();
+    assert!(content.contains("rust_parser: accepted"));
+    assert!(content.contains("fsck: accepted"));
+    assert!(content.contains("dump: accepted"));
+    assert!(content.contains("rust_parser_vs_fsck: agree"));
+    assert!(content.contains("interesting_findings: 0"));
+}
