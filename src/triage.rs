@@ -2,12 +2,13 @@ use crate::cli::TriageArgs;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
+use thiserror::Error;
 
 const FUZZ_BUCKET_REPORT_SCHEMA: &str = "erofs-rs.fuzz-buckets.v1";
-const BUCKET_DATABASE_SCHEMA: &str = "erofs-rs.bucket-db.v1";
+pub const BUCKET_DATABASE_SCHEMA: &str = "erofs-rs.bucket-db.v1";
 
 #[derive(Clone, Debug, Deserialize)]
 struct FuzzBucketReport {
@@ -35,39 +36,225 @@ struct BucketReportInput {
     report: FuzzBucketReport,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-struct BucketDatabase {
-    schema: String,
-    source_reports: Vec<BucketDatabaseSource>,
-    buckets: Vec<BucketDatabaseEntry>,
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BucketDatabase {
+    pub schema: String,
+    pub source_reports: Vec<BucketDatabaseSource>,
+    pub buckets: Vec<BucketDatabaseEntry>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-struct BucketDatabaseSource {
-    path: String,
-    rng_seed: u64,
-    iterations: u64,
-    text_report_path: String,
-    bucket_count: usize,
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BucketDatabaseSource {
+    pub path: String,
+    pub rng_seed: u64,
+    pub iterations: u64,
+    pub text_report_path: String,
+    pub bucket_count: usize,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-struct BucketDatabaseEntry {
-    signature: String,
-    classification: String,
-    outcome_kind: String,
-    total_count: u64,
-    campaign_count: u64,
-    examples: Vec<BucketExample>,
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BucketDatabaseEntry {
+    pub signature: String,
+    pub classification: String,
+    pub outcome_kind: String,
+    pub total_count: u64,
+    pub campaign_count: u64,
+    pub examples: Vec<BucketExample>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-struct BucketExample {
-    bucket_report_path: String,
-    rng_seed: u64,
-    first_iteration: u64,
-    example_seed_name: String,
-    reason: String,
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BucketExample {
+    pub bucket_report_path: String,
+    pub rng_seed: u64,
+    pub first_iteration: u64,
+    pub example_seed_name: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Error)]
+pub enum BucketDatabaseError {
+    #[error("failed to decode bucket database: {0}")]
+    Decode(#[from] serde_json::Error),
+    #[error("unsupported bucket database schema: {0}")]
+    UnsupportedSchema(String),
+    #[error("bucket database field {0} is empty")]
+    EmptyField(&'static str),
+    #[error("bucket database list {0} is empty")]
+    EmptyList(&'static str),
+    #[error("bucket database contains duplicate source report: {0}")]
+    DuplicateSource(String),
+    #[error("bucket database contains duplicate signature: {0}")]
+    DuplicateSignature(String),
+    #[error("bucket database signature contains duplicate example source: {0}")]
+    DuplicateExampleSource(String),
+    #[error("bucket database example references unknown source report: {0}")]
+    UnknownExampleSource(String),
+    #[error("bucket database count mismatch for {field}: expected {expected}, actual {actual}")]
+    CountMismatch {
+        field: &'static str,
+        expected: u64,
+        actual: u64,
+    },
+}
+
+pub fn parse_bucket_database(
+    content: &str,
+) -> std::result::Result<BucketDatabase, BucketDatabaseError> {
+    let database: BucketDatabase = serde_json::from_str(content)?;
+    validate_bucket_database(&database)?;
+    Ok(database)
+}
+
+pub fn validate_bucket_database(
+    database: &BucketDatabase,
+) -> std::result::Result<(), BucketDatabaseError> {
+    if database.schema != BUCKET_DATABASE_SCHEMA {
+        return Err(BucketDatabaseError::UnsupportedSchema(
+            database.schema.clone(),
+        ));
+    }
+    if database.source_reports.is_empty() {
+        return Err(BucketDatabaseError::EmptyList("source_reports"));
+    }
+
+    let mut source_paths = HashSet::new();
+    for source in &database.source_reports {
+        require_database_nonempty("source_reports.path", &source.path)?;
+        require_database_nonempty("source_reports.text_report_path", &source.text_report_path)?;
+        if !source_paths.insert(source.path.as_str()) {
+            return Err(BucketDatabaseError::DuplicateSource(source.path.clone()));
+        }
+    }
+
+    let mut signatures = HashSet::new();
+    let mut source_bucket_counts: HashMap<&str, u64> = HashMap::new();
+    for bucket in &database.buckets {
+        validate_bucket_database_entry(bucket, &source_paths, &mut source_bucket_counts)?;
+        if !signatures.insert(bucket.signature.as_str()) {
+            return Err(BucketDatabaseError::DuplicateSignature(
+                bucket.signature.clone(),
+            ));
+        }
+    }
+
+    for source in &database.source_reports {
+        require_database_count(
+            "source_reports.bucket_count",
+            *source_bucket_counts.get(source.path.as_str()).unwrap_or(&0),
+            usize_to_u64_count("source_reports.bucket_count", source.bucket_count)?,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn validate_bucket_database_entry<'a>(
+    bucket: &'a BucketDatabaseEntry,
+    source_paths: &HashSet<&'a str>,
+    source_bucket_counts: &mut HashMap<&'a str, u64>,
+) -> std::result::Result<(), BucketDatabaseError> {
+    require_database_nonempty("buckets.signature", &bucket.signature)?;
+    require_database_nonempty("buckets.classification", &bucket.classification)?;
+    require_database_nonempty("buckets.outcome_kind", &bucket.outcome_kind)?;
+    if bucket.total_count == 0 {
+        return Err(BucketDatabaseError::CountMismatch {
+            field: "buckets.total_count",
+            expected: 1,
+            actual: 0,
+        });
+    }
+    if bucket.campaign_count == 0 {
+        return Err(BucketDatabaseError::CountMismatch {
+            field: "buckets.campaign_count",
+            expected: 1,
+            actual: 0,
+        });
+    }
+    if bucket.total_count < bucket.campaign_count {
+        return Err(BucketDatabaseError::CountMismatch {
+            field: "buckets.total_count",
+            expected: bucket.campaign_count,
+            actual: bucket.total_count,
+        });
+    }
+    if bucket.examples.is_empty() {
+        return Err(BucketDatabaseError::EmptyList("buckets.examples"));
+    }
+    require_database_count(
+        "buckets.campaign_count",
+        usize_to_u64_count("buckets.examples", bucket.examples.len())?,
+        bucket.campaign_count,
+    )?;
+
+    let mut example_sources = HashSet::new();
+    for example in &bucket.examples {
+        require_database_nonempty(
+            "buckets.examples.bucket_report_path",
+            &example.bucket_report_path,
+        )?;
+        if !source_paths.contains(example.bucket_report_path.as_str()) {
+            return Err(BucketDatabaseError::UnknownExampleSource(
+                example.bucket_report_path.clone(),
+            ));
+        }
+        if !example_sources.insert(example.bucket_report_path.as_str()) {
+            return Err(BucketDatabaseError::DuplicateExampleSource(
+                example.bucket_report_path.clone(),
+            ));
+        }
+        let count = source_bucket_counts
+            .entry(example.bucket_report_path.as_str())
+            .or_insert(0);
+        *count = count
+            .checked_add(1)
+            .ok_or(BucketDatabaseError::CountMismatch {
+                field: "source_reports.bucket_count",
+                expected: u64::MAX,
+                actual: *count,
+            })?;
+    }
+
+    Ok(())
+}
+
+fn require_database_nonempty(
+    field: &'static str,
+    value: &str,
+) -> std::result::Result<(), BucketDatabaseError> {
+    if value.is_empty() {
+        return Err(BucketDatabaseError::EmptyField(field));
+    }
+    Ok(())
+}
+
+fn require_database_count(
+    field: &'static str,
+    expected: u64,
+    actual: u64,
+) -> std::result::Result<(), BucketDatabaseError> {
+    if expected != actual {
+        return Err(BucketDatabaseError::CountMismatch {
+            field,
+            expected,
+            actual,
+        });
+    }
+    Ok(())
+}
+
+fn usize_to_u64_count(
+    field: &'static str,
+    value: usize,
+) -> std::result::Result<u64, BucketDatabaseError> {
+    u64::try_from(value).map_err(|_| BucketDatabaseError::CountMismatch {
+        field,
+        expected: u64::MAX,
+        actual: u64::MAX,
+    })
 }
 
 fn require_nonempty(path: &str, field: &'static str, value: &str) -> Result<()> {
@@ -227,6 +414,8 @@ fn build_bucket_database(mut reports: Vec<BucketReportInput>) -> Result<BucketDa
 }
 
 fn write_bucket_database(path: &Path, database: &BucketDatabase) -> Result<()> {
+    validate_bucket_database(database)
+        .map_err(|error| anyhow::anyhow!("generated bucket database is invalid: {error}"))?;
     let json =
         serde_json::to_string_pretty(database).context("failed to serialize bucket database")?;
     fs::write(path, json + "\n")
@@ -254,8 +443,8 @@ pub fn run(args: &TriageArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        BUCKET_DATABASE_SCHEMA, BucketReportInput, FuzzBucket, FuzzBucketReport,
-        build_bucket_database,
+        BUCKET_DATABASE_SCHEMA, BucketDatabaseError, BucketReportInput, FuzzBucket,
+        FuzzBucketReport, build_bucket_database, parse_bucket_database, validate_bucket_database,
     };
 
     fn bucket(signature: &str, classification: &str, count: u64) -> FuzzBucket {
@@ -359,5 +548,119 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("duplicate bucket signature"));
+    }
+
+    #[test]
+    fn bucket_database_parser_accepts_generated_database() {
+        let database = build_bucket_database(vec![report(
+            "campaign/fuzz-buckets.json",
+            11,
+            vec![bucket(
+                "accepted_with_errors: shared",
+                "accepted_with_errors",
+                1,
+            )],
+        )])
+        .unwrap();
+        let content = serde_json::to_string(&database).unwrap();
+
+        let parsed = parse_bucket_database(&content).unwrap();
+
+        assert_eq!(parsed, database);
+    }
+
+    #[test]
+    fn bucket_database_parser_rejects_unknown_schema() {
+        let mut database = build_bucket_database(vec![report(
+            "campaign/fuzz-buckets.json",
+            11,
+            vec![bucket(
+                "accepted_with_errors: shared",
+                "accepted_with_errors",
+                1,
+            )],
+        )])
+        .unwrap();
+        database.schema = "erofs-rs.bucket-db.v0".to_string();
+
+        let error = validate_bucket_database(&database).unwrap_err();
+
+        assert!(matches!(error, BucketDatabaseError::UnsupportedSchema(_)));
+    }
+
+    #[test]
+    fn bucket_database_parser_rejects_source_count_mismatch() {
+        let mut database = build_bucket_database(vec![report(
+            "campaign/fuzz-buckets.json",
+            11,
+            vec![bucket(
+                "accepted_with_errors: shared",
+                "accepted_with_errors",
+                1,
+            )],
+        )])
+        .unwrap();
+        database.source_reports[0].bucket_count = 2;
+
+        let error = validate_bucket_database(&database).unwrap_err();
+
+        assert!(matches!(
+            error,
+            BucketDatabaseError::CountMismatch {
+                field: "source_reports.bucket_count",
+                expected: 1,
+                actual: 2,
+            }
+        ));
+    }
+
+    #[test]
+    fn bucket_database_parser_rejects_unknown_example_source() {
+        let mut database = build_bucket_database(vec![report(
+            "campaign/fuzz-buckets.json",
+            11,
+            vec![bucket(
+                "accepted_with_errors: shared",
+                "accepted_with_errors",
+                1,
+            )],
+        )])
+        .unwrap();
+        database.buckets[0].examples[0].bucket_report_path =
+            "missing/fuzz-buckets.json".to_string();
+
+        let error = validate_bucket_database(&database).unwrap_err();
+
+        assert!(matches!(
+            error,
+            BucketDatabaseError::UnknownExampleSource(path)
+                if path == "missing/fuzz-buckets.json"
+        ));
+    }
+
+    #[test]
+    fn bucket_database_parser_rejects_duplicate_example_source() {
+        let mut database = build_bucket_database(vec![report(
+            "campaign/fuzz-buckets.json",
+            11,
+            vec![bucket(
+                "accepted_with_errors: shared",
+                "accepted_with_errors",
+                1,
+            )],
+        )])
+        .unwrap();
+        let duplicate = database.buckets[0].examples[0].clone();
+        database.buckets[0].examples.push(duplicate);
+        database.buckets[0].campaign_count = 2;
+        database.buckets[0].total_count = 2;
+
+        let error = validate_bucket_database(&database).unwrap_err();
+
+        assert!(matches!(
+            error,
+            BucketDatabaseError::DuplicateExampleSource(path)
+                if path == "campaign/fuzz-buckets.json"
+        ));
     }
 }

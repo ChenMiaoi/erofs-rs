@@ -130,7 +130,9 @@ Campaign-level files:
 | `fuzz-buckets.json` | `erofs-rs.fuzz-buckets.v1` | Machine-readable signature buckets |
 
 Use `erofs-rs triage` to merge multiple `fuzz-buckets.json` files into an
-`erofs-rs.bucket-db.v1` bucket database.
+`erofs-rs.bucket-db.v1` bucket database. The Rust parser rejects unknown
+database schemas, duplicate source reports or signatures, unknown example
+source reports, and source bucket counts that do not match the examples.
 
 ## Mutation Manifests
 

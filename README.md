@@ -227,7 +227,10 @@ erofs-rs triage \
 total counts per signature, campaign counts, classifications, outcome kinds,
 and representative examples from each campaign. Inputs with unknown schemas,
 duplicate signatures within one report, zero counts, or conflicting
-classification/outcome metadata are rejected instead of merged silently.
+classification/outcome metadata are rejected instead of merged silently. The
+Rust library parser also rejects unknown bucket database schemas, duplicate
+source reports or signatures, examples that reference unknown source reports,
+and inconsistent per-source bucket counts.
 
 ### `replay` – sidecar-based reproduction
 
