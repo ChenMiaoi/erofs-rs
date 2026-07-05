@@ -82,6 +82,7 @@ metadata instead of guessing how an artifact was produced.
 |---|---|---|---|
 | `fuzz_*.erofs` | `erofs-rs fuzz` | raw EROFS image | Mutated test case |
 | `fuzz_*.json` | `erofs-rs fuzz` | `erofs-rs.fuzz-artifact.v1` | Per-artifact replay metadata |
+| replay JSON report | `erofs-rs replay` | `erofs-rs.replay-report.v1` | Sidecar replay outcome and match state |
 | `fuzz_*.stdout.txt` / `stderr.txt` | `erofs-rs fuzz` | text | Captured tool output with truncation metadata in sidecar |
 | `fuzz-report.txt` | `erofs-rs fuzz` | text | Human-readable campaign summary |
 | `fuzz-buckets.json` | `erofs-rs fuzz` | `erofs-rs.fuzz-buckets.v1` | Machine-readable signature buckets for one campaign |

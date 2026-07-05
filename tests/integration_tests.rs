@@ -1164,6 +1164,7 @@ fn test_replay_sidecar_reruns_fsck() {
     let artifact = tmp.path().join("fuzz_seed_iter1.erofs");
     let sidecar = tmp.path().join("fuzz_seed_iter1.json");
     let report = tmp.path().join("replay-report.txt");
+    let json_report = tmp.path().join("replay-report.json");
     fs::copy(fixture("single.erofs"), &artifact).unwrap();
     let sha256 = file_sha256(&artifact);
     let sidecar_json = serde_json::json!({
@@ -1196,6 +1197,7 @@ fn test_replay_sidecar_reruns_fsck() {
         artifact: None,
         fsck: Some("/bin/true".to_string()),
         report: Some(report.to_string_lossy().to_string()),
+        json_report: Some(json_report.to_string_lossy().to_string()),
         exec_timeout: 1,
         max_output_bytes: 1024,
         no_kill_process_group: false,
@@ -1209,4 +1211,9 @@ fn test_replay_sidecar_reruns_fsck() {
     assert!(content.contains("exit_code_match: true"));
     assert!(content.contains("timeout_match: true"));
     assert!(content.contains("replay_match: true"));
+
+    let json_content = fs::read_to_string(&json_report).unwrap();
+    let replay_report = erofs_rs::replay::parse_replay_report(&json_content).unwrap();
+    assert_eq!(replay_report.schema, erofs_rs::replay::REPLAY_REPORT_SCHEMA);
+    assert!(replay_report.comparison.replay_match);
 }

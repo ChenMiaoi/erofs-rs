@@ -1,15 +1,17 @@
 use crate::cli::ReplayArgs;
 use crate::fsck::{ExecLimits, FsckResult, run_fsck_with_limits};
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use thiserror::Error;
 
 const FUZZ_ARTIFACT_SCHEMA: &str = "erofs-rs.fuzz-artifact.v1";
+pub const REPLAY_REPORT_SCHEMA: &str = "erofs-rs.replay-report.v1";
 const DEFAULT_FSCK_PATH: &str = "./build/erofs-utils/fsck/fsck.erofs";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -34,6 +36,155 @@ struct ReplaySidecar {
     classification: String,
     reason: String,
     signature: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplayReport {
+    pub schema: String,
+    pub sidecar_path: String,
+    pub artifact_path: String,
+    pub artifact_sha256: String,
+    pub fsck_path: String,
+    pub rng_seed: u64,
+    pub iteration: u64,
+    pub strategy: String,
+    pub seed_name: String,
+    pub original: ReplayOriginalOutcome,
+    pub replay: ReplayFsckOutcome,
+    pub comparison: ReplayComparison,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplayOriginalOutcome {
+    pub classification: String,
+    pub reason: String,
+    pub exit_code: i32,
+    pub timed_out: bool,
+    pub signature: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplayFsckOutcome {
+    pub classification: String,
+    pub reason: String,
+    pub exit_code: i32,
+    pub signal: Option<i32>,
+    pub timed_out: bool,
+    pub killed_process_group: bool,
+    pub rss_limit_mb: Option<u64>,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplayComparison {
+    pub classification_match: bool,
+    pub exit_code_match: bool,
+    pub timeout_match: bool,
+    pub replay_match: bool,
+}
+
+#[derive(Debug, Error)]
+pub enum ReplayReportError {
+    #[error("failed to decode replay report: {0}")]
+    Decode(#[from] serde_json::Error),
+    #[error("unsupported replay report schema: {0}")]
+    UnsupportedSchema(String),
+    #[error("replay report field {0} is empty")]
+    EmptyField(&'static str),
+    #[error("replay report field {field} has invalid SHA-256 digest: {sha256}")]
+    InvalidSha256 { field: &'static str, sha256: String },
+    #[error("replay report comparison field {0} does not match outcomes")]
+    InconsistentComparison(&'static str),
+}
+
+pub fn parse_replay_report(content: &str) -> std::result::Result<ReplayReport, ReplayReportError> {
+    let report: ReplayReport = serde_json::from_str(content)?;
+    validate_replay_report(&report)?;
+    Ok(report)
+}
+
+pub fn validate_replay_report(report: &ReplayReport) -> std::result::Result<(), ReplayReportError> {
+    if report.schema != REPLAY_REPORT_SCHEMA {
+        return Err(ReplayReportError::UnsupportedSchema(report.schema.clone()));
+    }
+    require_replay_nonempty("sidecar_path", &report.sidecar_path)?;
+    require_replay_nonempty("artifact_path", &report.artifact_path)?;
+    require_replay_nonempty("fsck_path", &report.fsck_path)?;
+    require_replay_nonempty("strategy", &report.strategy)?;
+    require_replay_nonempty("seed_name", &report.seed_name)?;
+    if !is_sha256_digest(&report.artifact_sha256) {
+        return Err(ReplayReportError::InvalidSha256 {
+            field: "artifact_sha256",
+            sha256: report.artifact_sha256.clone(),
+        });
+    }
+
+    validate_original_outcome(&report.original)?;
+    validate_replay_outcome(&report.replay)?;
+    validate_replay_comparison(report)?;
+    Ok(())
+}
+
+fn validate_original_outcome(
+    outcome: &ReplayOriginalOutcome,
+) -> std::result::Result<(), ReplayReportError> {
+    require_replay_nonempty("original.classification", &outcome.classification)?;
+    require_replay_nonempty("original.reason", &outcome.reason)?;
+    require_replay_nonempty("original.signature", &outcome.signature)?;
+    Ok(())
+}
+
+fn validate_replay_outcome(
+    outcome: &ReplayFsckOutcome,
+) -> std::result::Result<(), ReplayReportError> {
+    require_replay_nonempty("replay.classification", &outcome.classification)?;
+    require_replay_nonempty("replay.reason", &outcome.reason)?;
+    Ok(())
+}
+
+fn validate_replay_comparison(report: &ReplayReport) -> std::result::Result<(), ReplayReportError> {
+    let classification_match = report.original.classification == report.replay.classification;
+    if report.comparison.classification_match != classification_match {
+        return Err(ReplayReportError::InconsistentComparison(
+            "classification_match",
+        ));
+    }
+
+    let exit_code_match = report.original.exit_code == report.replay.exit_code;
+    if report.comparison.exit_code_match != exit_code_match {
+        return Err(ReplayReportError::InconsistentComparison("exit_code_match"));
+    }
+
+    let timeout_match = report.original.timed_out == report.replay.timed_out;
+    if report.comparison.timeout_match != timeout_match {
+        return Err(ReplayReportError::InconsistentComparison("timeout_match"));
+    }
+
+    let replay_match = classification_match && exit_code_match && timeout_match;
+    if report.comparison.replay_match != replay_match {
+        return Err(ReplayReportError::InconsistentComparison("replay_match"));
+    }
+
+    Ok(())
+}
+
+fn require_replay_nonempty(
+    field: &'static str,
+    value: &str,
+) -> std::result::Result<(), ReplayReportError> {
+    if value.is_empty() {
+        return Err(ReplayReportError::EmptyField(field));
+    }
+    Ok(())
+}
+
+fn is_sha256_digest(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn limits_from_args(args: &ReplayArgs, sidecar: &ReplaySidecar) -> ExecLimits {
@@ -187,6 +338,63 @@ fn render_report(
     lines.join("\n")
 }
 
+fn build_replay_report(
+    sidecar_path: &Path,
+    artifact_path: &Path,
+    fsck_path: &str,
+    sidecar: &ReplaySidecar,
+    result: &FsckResult,
+    artifact_sha256: &str,
+) -> ReplayReport {
+    let classification_match = sidecar.classification == result.classification;
+    let exit_code_match = sidecar.fsck_exit_code == result.exit_code;
+    let timeout_match = sidecar.fsck_timed_out == result.timed_out;
+    ReplayReport {
+        schema: REPLAY_REPORT_SCHEMA.to_string(),
+        sidecar_path: sidecar_path.display().to_string(),
+        artifact_path: artifact_path.display().to_string(),
+        artifact_sha256: artifact_sha256.to_string(),
+        fsck_path: fsck_path.to_string(),
+        rng_seed: sidecar.rng_seed,
+        iteration: sidecar.iteration,
+        strategy: sidecar.strategy.clone(),
+        seed_name: sidecar.seed_name.clone(),
+        original: ReplayOriginalOutcome {
+            classification: sidecar.classification.clone(),
+            reason: sidecar.reason.clone(),
+            exit_code: sidecar.fsck_exit_code,
+            timed_out: sidecar.fsck_timed_out,
+            signature: sidecar.signature.clone(),
+        },
+        replay: ReplayFsckOutcome {
+            classification: result.classification.clone(),
+            reason: result.reason.clone(),
+            exit_code: result.exit_code,
+            signal: result.signal,
+            timed_out: result.timed_out,
+            killed_process_group: result.killed_process_group,
+            rss_limit_mb: result.rss_limit_mb,
+            stdout_truncated: result.stdout_truncated,
+            stderr_truncated: result.stderr_truncated,
+        },
+        comparison: ReplayComparison {
+            classification_match,
+            exit_code_match,
+            timeout_match,
+            replay_match: classification_match && exit_code_match && timeout_match,
+        },
+    }
+}
+
+fn write_json_report(path: &str, report: &ReplayReport) -> Result<()> {
+    validate_replay_report(report)
+        .map_err(|error| anyhow::anyhow!("generated replay report is invalid: {error}"))?;
+    let json =
+        serde_json::to_string_pretty(report).context("failed to serialize replay JSON report")?;
+    fs::write(path, json + "\n")
+        .map_err(|e| anyhow::anyhow!("failed to write replay JSON report {path}: {e}"))
+}
+
 fn optional_i32(value: Option<i32>) -> String {
     value.map_or_else(|| "none".to_string(), |value| value.to_string())
 }
@@ -220,10 +428,21 @@ pub fn run(args: &ReplayArgs) -> Result<()> {
         &result,
         &artifact_sha256,
     );
+    let json_report = build_replay_report(
+        sidecar_path,
+        &artifact_path,
+        &fsck,
+        &sidecar,
+        &result,
+        &artifact_sha256,
+    );
 
     if let Some(report_path) = &args.report {
         fs::write(report_path, &report)
             .map_err(|e| anyhow::anyhow!("failed to write replay report {report_path}: {e}"))?;
+    }
+    if let Some(report_path) = &args.json_report {
+        write_json_report(report_path, &json_report)?;
     }
 
     print!("{report}");
@@ -232,7 +451,11 @@ pub fn run(args: &ReplayArgs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ReplayCommands, ReplaySidecar, replay_matches, resolve_artifact};
+    use super::{
+        REPLAY_REPORT_SCHEMA, ReplayCommands, ReplayReportError, ReplaySidecar,
+        build_replay_report, parse_replay_report, replay_matches, resolve_artifact,
+        validate_replay_report,
+    };
     use crate::fsck::FsckResult;
     use std::fs;
     use std::path::Path;
@@ -308,5 +531,111 @@ mod tests {
             ..result
         };
         assert!(!replay_matches(&sidecar, &result));
+    }
+
+    #[test]
+    fn replay_report_parser_accepts_generated_report() {
+        let sidecar = sidecar("artifact.erofs", "accepted");
+        let result = FsckResult {
+            exit_code: 0,
+            classification: "accepted".to_string(),
+            reason: "fsck accepted the image".to_string(),
+            ..FsckResult::default()
+        };
+        let report = build_replay_report(
+            Path::new("fuzz_seed_iter1.json"),
+            Path::new("artifact.erofs"),
+            "fsck.erofs",
+            &sidecar,
+            &result,
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        );
+        let content = serde_json::to_string(&report).unwrap();
+
+        let parsed = parse_replay_report(&content).unwrap();
+
+        assert_eq!(parsed.schema, REPLAY_REPORT_SCHEMA);
+        assert!(parsed.comparison.replay_match);
+    }
+
+    #[test]
+    fn replay_report_parser_rejects_invalid_artifact_hash() {
+        let sidecar = sidecar("artifact.erofs", "accepted");
+        let result = FsckResult {
+            exit_code: 0,
+            classification: "accepted".to_string(),
+            reason: "fsck accepted the image".to_string(),
+            ..FsckResult::default()
+        };
+        let mut report = build_replay_report(
+            Path::new("fuzz_seed_iter1.json"),
+            Path::new("artifact.erofs"),
+            "fsck.erofs",
+            &sidecar,
+            &result,
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        );
+        report.artifact_sha256 = "not-sha".to_string();
+
+        let error = validate_replay_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            ReplayReportError::InvalidSha256 {
+                field: "artifact_sha256",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn replay_report_parser_rejects_unknown_schema() {
+        let sidecar = sidecar("artifact.erofs", "accepted");
+        let result = FsckResult {
+            exit_code: 0,
+            classification: "accepted".to_string(),
+            reason: "fsck accepted the image".to_string(),
+            ..FsckResult::default()
+        };
+        let mut report = build_replay_report(
+            Path::new("fuzz_seed_iter1.json"),
+            Path::new("artifact.erofs"),
+            "fsck.erofs",
+            &sidecar,
+            &result,
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        );
+        report.schema = "erofs-rs.replay-report.v0".to_string();
+
+        let error = validate_replay_report(&report).unwrap_err();
+
+        assert!(matches!(error, ReplayReportError::UnsupportedSchema(_)));
+    }
+
+    #[test]
+    fn replay_report_parser_rejects_inconsistent_comparison() {
+        let sidecar = sidecar("artifact.erofs", "accepted");
+        let result = FsckResult {
+            exit_code: 0,
+            classification: "accepted".to_string(),
+            reason: "fsck accepted the image".to_string(),
+            ..FsckResult::default()
+        };
+        let mut report = build_replay_report(
+            Path::new("fuzz_seed_iter1.json"),
+            Path::new("artifact.erofs"),
+            "fsck.erofs",
+            &sidecar,
+            &result,
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        );
+        report.comparison.replay_match = false;
+
+        let error = validate_replay_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            ReplayReportError::InconsistentComparison("replay_match")
+        ));
     }
 }

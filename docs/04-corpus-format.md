@@ -215,6 +215,11 @@ bundle.json` to create the manifest from sidecar metadata; pass
 reports. The command verifies the artifact digest against the sidecar before
 writing the manifest.
 
+Replay JSON reports use the `erofs-rs.replay-report.v1` schema. Generate one
+with `erofs-rs replay --sidecar <fuzz_*.json> --json-report replay-report.json`
+so bundles can carry the original sidecar outcome, replayed fsck outcome, and
+match booleans without scraping the text report.
+
 ## Import Rules
 
 Before importing a corpus unit into the repository:

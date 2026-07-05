@@ -238,7 +238,8 @@ and inconsistent per-source bucket counts.
 erofs-rs replay \
     --sidecar /tmp/fuzz-artifacts/fuzz_single_iter42.json \
     --fsck build/erofs-utils/fsck/fsck.erofs \
-    --report /tmp/replay-report.txt
+    --report /tmp/replay-report.txt \
+    --json-report /tmp/replay-report.json
 ```
 
 `replay` consumes a `fuzz` JSON sidecar, locates the artifact image recorded in
@@ -247,7 +248,9 @@ whether the replayed classification, exit code, and timeout state match the
 original sidecar metadata. If the original artifact path is stale, `replay`
 also checks for an artifact with the same file name next to the sidecar, which
 keeps finding bundles portable across machines. Use `--artifact` or `--fsck` to
-override the sidecar paths during local triage.
+override the sidecar paths during local triage. `--json-report` writes the
+stable `erofs-rs.replay-report.v1` schema with original and replayed fsck
+outcomes plus match booleans for automation.
 
 ### Finding bundles
 
