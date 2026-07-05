@@ -3,6 +3,7 @@
 //! This crate provides a reusable library for parsing, mutating, and validating
 //! EROFS filesystem images, plus a CLI front-end in `src/main.rs`.
 
+pub mod bundle;
 pub mod checksum;
 pub mod cli;
 pub mod corpus;

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use erofs_rs::cli::{Cli, Commands};
-use erofs_rs::{corpus, fuzz, info, inject, mutate, oracle, replay, triage};
+use erofs_rs::{bundle, corpus, fuzz, info, inject, mutate, oracle, replay, triage};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -12,6 +12,7 @@ fn main() -> Result<()> {
         Commands::Corpus(args) => corpus::run(args),
         Commands::Fuzz(args) => fuzz::run(args),
         Commands::Replay(args) => replay::run(args),
+        Commands::Bundle(args) => bundle::run(args),
         Commands::Triage(args) => triage::run(args),
         Commands::Oracle(args) => oracle::run(args),
         Commands::Info(args) => info::run(args),

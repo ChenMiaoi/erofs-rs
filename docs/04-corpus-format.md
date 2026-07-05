@@ -112,7 +112,11 @@ A portable finding bundle should include:
 
 The manifest schema is `erofs-rs.finding-bundle.v1`. It stores file paths and
 full SHA-256 digests so a reviewer can verify that reports match the artifact
-under discussion.
+under discussion. Use `erofs-rs bundle --sidecar <fuzz_*.json> --output
+bundle.json` to create the manifest from sidecar metadata; pass
+`--replay-report`, `--oracle-report`, or `--kernel-report` to include optional
+reports. The command verifies the artifact digest against the sidecar before
+writing the manifest.
 
 ## Import Rules
 

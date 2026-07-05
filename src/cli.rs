@@ -20,6 +20,8 @@ pub enum Commands {
     Fuzz(FuzzArgs),
     /// Replay a fuzz artifact from its JSON sidecar.
     Replay(ReplayArgs),
+    /// Create a portable fuzz finding bundle manifest.
+    Bundle(BundleArgs),
     /// Merge fuzz campaign triage reports.
     Triage(TriageArgs),
     /// Run userspace oracle checks over one image.
@@ -213,6 +215,26 @@ pub struct ReplayArgs {
         help = "Address-space limit in MiB for each tool execution on Unix"
     )]
     pub rss_limit_mb: Option<u64>,
+}
+
+#[derive(Parser, Debug)]
+pub struct BundleArgs {
+    #[arg(long, help = "Fuzz artifact JSON sidecar")]
+    pub sidecar: String,
+    #[arg(long, help = "Override artifact image path from the sidecar")]
+    pub artifact: Option<String>,
+    #[arg(long, help = "Override captured stdout path from the sidecar")]
+    pub stdout: Option<String>,
+    #[arg(long, help = "Override captured stderr path from the sidecar")]
+    pub stderr: Option<String>,
+    #[arg(long, help = "Optional replay report to include")]
+    pub replay_report: Option<String>,
+    #[arg(long, help = "Optional oracle report to include")]
+    pub oracle_report: Option<String>,
+    #[arg(long, help = "Optional kernel replay report to include")]
+    pub kernel_report: Option<String>,
+    #[arg(long, help = "Output bundle.json manifest path")]
+    pub output: String,
 }
 
 #[derive(Parser, Debug)]

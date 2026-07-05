@@ -240,11 +240,23 @@ override the sidecar paths during local triage.
 
 ### Finding bundles
 
+```bash
+erofs-rs bundle \
+    --sidecar /tmp/fuzz-artifacts/fuzz_single_iter42.json \
+    --replay-report /tmp/replay-report.txt \
+    --oracle-report /tmp/oracle-report.json \
+    --output /tmp/fuzz-artifacts/bundle.json
+```
+
 Triage bundles should keep the image, fuzz sidecar, captured stdout/stderr, and
 any replay, oracle, or kernel reports together. The Rust library validates a
 `bundle.json` manifest with the stable `erofs-rs.finding-bundle.v1` schema so a
 bundle can identify the artifact SHA-256, matching sidecar, optional report
 files, classification, and signature without relying on directory names.
+`bundle` creates this manifest from a fuzz sidecar, verifies the artifact
+SHA-256, includes captured stdout/stderr when the sidecar records them, and
+hashes any optional replay, oracle, or kernel report paths supplied on the
+command line.
 
 ### Coverage-guided fuzz targets
 
