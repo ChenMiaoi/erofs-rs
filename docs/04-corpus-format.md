@@ -185,7 +185,7 @@ The report stores the input path, input SHA-256, individual check verdicts,
 pairwise matrix rows, and the number of disagreeing rows. The Rust library
 parser rejects unknown schemas, unknown fields, empty required fields,
 malformed input digests, invalid status or verdict values, inconsistent
-`disagrees` flags, and mismatched
+`disagrees` flags or matrix verdicts, and mismatched
 `interesting_findings` counts. It also rejects duplicate checks, duplicate
 matrix rows, matrix rows that reference checks missing from the report, rows
 that copy status or classification values that differ from the referenced

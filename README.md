@@ -381,10 +381,11 @@ triaged separately from ordinary malformed image rejections. `--json-report`
 writes the input SHA-256, the same checks, pairwise matrix verdicts, and
 interesting-finding count with the stable `erofs-rs.oracle-report.v1` schema
 for campaign automation. The parser rejects malformed input digests, duplicate
-checks, duplicate matrix rows, and matrix rows that reference checks missing
-from the report or copy status/classification values that differ from the
-referenced checks. It also requires the matrix to contain the canonical row for
-every check pair so incomplete oracle reports cannot hide a disagreement.
+checks, duplicate matrix rows, inconsistent matrix verdicts, and matrix rows
+that reference checks missing from the report or copy status/classification
+values that differ from the referenced checks. It also requires the matrix to
+contain the canonical row for every check pair so incomplete oracle reports
+cannot hide a disagreement.
 
 ## Library usage
 

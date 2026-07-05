@@ -172,6 +172,7 @@ pub fn validate_oracle_json_report(
         require_matrix_check(entry, &entry.left, &check_names)?;
         require_matrix_check(entry, &entry.right, &check_names)?;
         validate_matrix_check_values(entry, &checks_by_name)?;
+        validate_matrix_verdict(entry)?;
         let expected_name = expected_matrix_entry_name(entry, &check_order)?;
         if entry.name != expected_name {
             return Err(OracleJsonReportError::InvalidMatrixPair {
@@ -296,6 +297,33 @@ fn require_matrix_check_value(
         });
     }
     Ok(())
+}
+
+fn validate_matrix_verdict(
+    entry: &OracleMatrixEntry,
+) -> std::result::Result<(), OracleJsonReportError> {
+    let skipped =
+        !is_decision_status(&entry.left_status) || !is_decision_status(&entry.right_status);
+    let disagrees = !skipped
+        && (entry.left_status != entry.right_status
+            || entry.left_classification != entry.right_classification);
+    let expected_verdict = if skipped {
+        "skipped"
+    } else if disagrees {
+        "disagree"
+    } else {
+        "agree"
+    };
+    if entry.verdict != expected_verdict || entry.disagrees != disagrees {
+        return Err(OracleJsonReportError::InconsistentVerdict(
+            entry.name.clone(),
+        ));
+    }
+    Ok(())
+}
+
+fn is_decision_status(status: &str) -> bool {
+    matches!(status, "accepted" | "rejected")
 }
 
 fn validate_json_check(check: &OracleJsonCheck) -> std::result::Result<(), OracleJsonReportError> {
@@ -920,6 +948,27 @@ mod tests {
         assert!(matches!(
             error,
             OracleJsonReportError::InconsistentVerdict(_)
+        ));
+    }
+
+    #[test]
+    fn oracle_json_report_parser_rejects_skipped_verdict_mismatch() {
+        let mut report: serde_json::Value = serde_json::from_str(VALID_JSON_REPORT).unwrap();
+        report["checks"][0]["status"] = serde_json::json!("skipped");
+        report["checks"][0]["classification"] = serde_json::json!("skipped");
+        report["matrix"][0]["left_status"] = serde_json::json!("skipped");
+        report["matrix"][0]["left_classification"] = serde_json::json!("skipped");
+        report["matrix"][0]["verdict"] = serde_json::json!("agree");
+        report["matrix"][0]["disagrees"] = serde_json::json!(false);
+        report["interesting_findings"] = serde_json::json!(0);
+        let report = serde_json::to_string(&report).unwrap();
+
+        let error = parse_oracle_json_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            OracleJsonReportError::InconsistentVerdict(entry)
+                if entry == "rust_parser_vs_fsck"
         ));
     }
 
