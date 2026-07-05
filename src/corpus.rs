@@ -109,6 +109,17 @@ pub enum CoverageManifestError {
     DuplicateUnitPath { field: &'static str, path: String },
     #[error("coverage manifest unit target has no summary: {0}")]
     MissingTargetSummary(String),
+    #[error("coverage manifest field {field} has invalid path: {path}")]
+    InvalidPath { field: &'static str, path: String },
+    #[error(
+        "coverage manifest {field} mismatch for target {target}: expected {expected}, actual {actual}"
+    )]
+    ImportPathMismatch {
+        field: &'static str,
+        target: String,
+        expected: String,
+        actual: String,
+    },
     #[error("coverage manifest count mismatch for {field}: expected {expected}, actual {actual}")]
     CountMismatch {
         field: &'static str,
@@ -174,7 +185,7 @@ pub fn validate_coverage_manifest(
     let mut copied_paths = HashSet::new();
     let mut recommended_import_paths = HashSet::new();
     for unit in &manifest.units {
-        validate_coverage_unit(unit)?;
+        validate_coverage_unit(unit, &manifest.recommended_import_root)?;
         if !unit_hashes.insert(unit.sha256.as_str()) {
             return Err(CoverageManifestError::DuplicateUnitSha256(
                 unit.sha256.clone(),
@@ -201,7 +212,12 @@ pub fn validate_coverage_manifest(
 
     let mut target_names = HashSet::new();
     for target in &manifest.targets {
-        validate_coverage_target_summary(target, &units_by_target, &hashes_by_target)?;
+        validate_coverage_target_summary(
+            target,
+            &manifest.recommended_import_root,
+            &units_by_target,
+            &hashes_by_target,
+        )?;
         if !target_names.insert(target.target.as_str()) {
             return Err(CoverageManifestError::DuplicateTarget(
                 target.target.clone(),
@@ -241,14 +257,25 @@ pub fn validate_coverage_manifest(
 
 fn validate_coverage_target_summary(
     target: &CoverageTargetSummary,
+    recommended_import_root: &str,
     units_by_target: &HashMap<&str, usize>,
     hashes_by_target: &HashMap<&str, HashSet<&str>>,
 ) -> std::result::Result<(), CoverageManifestError> {
     require_coverage_nonempty("targets.target", &target.target)?;
+    require_coverage_path_component("targets.target", &target.target)?;
     require_coverage_nonempty(
         "targets.recommended_import_dir",
         &target.recommended_import_dir,
     )?;
+    let expected_import_dir = recommended_import_dir_under(recommended_import_root, &target.target);
+    if target.recommended_import_dir != expected_import_dir {
+        return Err(CoverageManifestError::ImportPathMismatch {
+            field: "targets.recommended_import_dir",
+            target: target.target.clone(),
+            expected: expected_import_dir,
+            actual: target.recommended_import_dir.clone(),
+        });
+    }
     require_coverage_count(
         "targets.collected_units",
         *units_by_target.get(target.target.as_str()).unwrap_or(&0),
@@ -279,8 +306,10 @@ fn validate_coverage_target_summary(
 
 fn validate_coverage_unit(
     unit: &CoverageManifestUnit,
+    recommended_import_root: &str,
 ) -> std::result::Result<(), CoverageManifestError> {
     require_coverage_nonempty("units.target", &unit.target)?;
+    require_coverage_path_component("units.target", &unit.target)?;
     require_coverage_nonempty("units.source_path", &unit.source_path)?;
     require_coverage_nonempty("units.copied_path", &unit.copied_path)?;
     require_coverage_nonempty("units.lifecycle", &unit.lifecycle)?;
@@ -292,6 +321,17 @@ fn validate_coverage_unit(
         return Err(CoverageManifestError::InvalidSha256 {
             field: "units.sha256",
             sha256: unit.sha256.clone(),
+        });
+    }
+    let copied_name = coverage_copied_file_name(&unit.copied_path)?;
+    let expected_import_path =
+        recommended_import_path_under(recommended_import_root, &unit.target, copied_name);
+    if unit.recommended_import_path != expected_import_path {
+        return Err(CoverageManifestError::ImportPathMismatch {
+            field: "units.recommended_import_path",
+            target: unit.target.clone(),
+            expected: expected_import_path,
+            actual: unit.recommended_import_path.clone(),
         });
     }
     Ok(())
@@ -342,6 +382,38 @@ fn require_coverage_sum(
 
 fn is_sha256_digest(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn require_coverage_path_component(
+    field: &'static str,
+    value: &str,
+) -> std::result::Result<(), CoverageManifestError> {
+    if !is_portable_path_component(value) {
+        return Err(CoverageManifestError::InvalidPath {
+            field,
+            path: value.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn coverage_copied_file_name(path: &str) -> std::result::Result<&str, CoverageManifestError> {
+    let mut components = path.split('/');
+    match (components.next(), components.next(), components.next()) {
+        (Some(category), Some(copied_name), None)
+            if category == COVERAGE_CATEGORY && is_portable_path_component(copied_name) =>
+        {
+            Ok(copied_name)
+        }
+        _ => Err(CoverageManifestError::InvalidPath {
+            field: "units.copied_path",
+            path: path.to_string(),
+        }),
+    }
+}
+
+fn is_portable_path_component(value: &str) -> bool {
+    !value.is_empty() && value != "." && value != ".." && !value.contains(['/', '\\'])
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -735,15 +807,19 @@ fn relative_path_string(root: &Path, path: &Path) -> String {
 }
 
 fn recommended_import_dir(target: &str) -> String {
-    portable_path(&Path::new(MINIMIZED_IMPORT_ROOT).join(target))
+    recommended_import_dir_under(MINIMIZED_IMPORT_ROOT, target)
 }
 
 fn recommended_import_path(target: &str, copied_name: &str) -> String {
-    portable_path(
-        &Path::new(MINIMIZED_IMPORT_ROOT)
-            .join(target)
-            .join(copied_name),
-    )
+    recommended_import_path_under(MINIMIZED_IMPORT_ROOT, target, copied_name)
+}
+
+fn recommended_import_dir_under(root: &str, target: &str) -> String {
+    portable_path(&Path::new(root).join(target))
+}
+
+fn recommended_import_path_under(root: &str, target: &str, copied_name: &str) -> String {
+    portable_path(&Path::new(root).join(target).join(copied_name))
 }
 
 fn infer_coverage_target(input_dir: &Path, path: &Path) -> String {
@@ -1281,6 +1357,41 @@ mod tests {
     }
 
     #[test]
+    fn coverage_manifest_rejects_target_path_component() {
+        let mut report: serde_json::Value = serde_json::from_str(VALID_COVERAGE_MANIFEST).unwrap();
+        report["targets"][0]["target"] = serde_json::json!("../superblock_parse");
+        report["units"][0]["target"] = serde_json::json!("../superblock_parse");
+        let report = serde_json::to_string(&report).unwrap();
+
+        let error = parse_coverage_manifest(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            CoverageManifestError::InvalidPath {
+                field: "units.target",
+                path,
+            } if path == "../superblock_parse"
+        ));
+    }
+
+    #[test]
+    fn coverage_manifest_rejects_copied_path_outside_category() {
+        let mut report: serde_json::Value = serde_json::from_str(VALID_COVERAGE_MANIFEST).unwrap();
+        report["units"][0]["copied_path"] = serde_json::json!("other/unit-a");
+        let report = serde_json::to_string(&report).unwrap();
+
+        let error = parse_coverage_manifest(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            CoverageManifestError::InvalidPath {
+                field: "units.copied_path",
+                path,
+            } if path == "other/unit-a"
+        ));
+    }
+
+    #[test]
     fn coverage_manifest_rejects_total_count_mismatch() {
         let report = VALID_COVERAGE_MANIFEST
             .replace(r#""total_input_units": 2"#, r#""total_input_units": 3"#);
@@ -1391,6 +1502,50 @@ mod tests {
                 field: "copied_path",
                 path,
             } if path == "coverage-interesting/unit-a"
+        ));
+    }
+
+    #[test]
+    fn coverage_manifest_rejects_recommended_import_dir_mismatch() {
+        let mut report: serde_json::Value = serde_json::from_str(VALID_COVERAGE_MANIFEST).unwrap();
+        report["targets"][0]["recommended_import_dir"] =
+            serde_json::json!("corpus/seeds/minimized/inode_locate");
+        let report = serde_json::to_string(&report).unwrap();
+
+        let error = parse_coverage_manifest(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            CoverageManifestError::ImportPathMismatch {
+                field: "targets.recommended_import_dir",
+                target,
+                expected,
+                actual,
+            } if target == "superblock_parse"
+                && expected == "corpus/seeds/minimized/superblock_parse"
+                && actual == "corpus/seeds/minimized/inode_locate"
+        ));
+    }
+
+    #[test]
+    fn coverage_manifest_rejects_recommended_import_path_mismatch() {
+        let report = VALID_COVERAGE_MANIFEST.replace(
+            "corpus/seeds/minimized/superblock_parse/unit-a",
+            "corpus/seeds/minimized/inode_locate/unit-a",
+        );
+
+        let error = parse_coverage_manifest(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            CoverageManifestError::ImportPathMismatch {
+                field: "units.recommended_import_path",
+                target,
+                expected,
+                actual,
+            } if target == "superblock_parse"
+                && expected == "corpus/seeds/minimized/superblock_parse/unit-a"
+                && actual == "corpus/seeds/minimized/inode_locate/unit-a"
         ));
     }
 
