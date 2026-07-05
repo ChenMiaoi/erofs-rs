@@ -143,6 +143,15 @@ struct ResolvedField {
     target: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NamedInjection {
+    pub offset: usize,
+    pub width: FieldWidth,
+    pub old_value: u64,
+    pub new_value: u64,
+    pub target: String,
+}
+
 fn resolve_field(
     image: &Image,
     field_name: &str,
@@ -230,6 +239,23 @@ fn resolve_field(
     bail!("Unknown field: {field_name}")
 }
 
+pub fn inject_named_field(
+    image: &mut Image,
+    field_name: &str,
+    target_hint: Option<&str>,
+    new_value: u64,
+) -> Result<NamedInjection> {
+    let resolved = resolve_field(image, field_name, target_hint)?;
+    image.write_field(resolved.offset, resolved.width, new_value)?;
+    Ok(NamedInjection {
+        offset: resolved.offset,
+        width: resolved.width,
+        old_value: resolved.old_value,
+        new_value,
+        target: resolved.target,
+    })
+}
+
 fn sha256_hex(image: &Image) -> String {
     let mut hasher = Sha256::new();
     hasher.update(image.as_bytes());
@@ -310,19 +336,21 @@ pub fn run(args: &InjectArgs) -> Result<()> {
     let new_value = parse_value(&args.value)?;
 
     let (operation, offset, width, old_value, target) = if let Some(field_name) = &args.field {
-        let resolved = resolve_field(&image, field_name, args.target.as_deref())?;
+        let injected =
+            inject_named_field(&mut image, field_name, args.target.as_deref(), new_value)?;
         (
             "field",
-            resolved.offset,
-            resolved.width,
-            resolved.old_value,
-            resolved.target,
+            injected.offset,
+            injected.width,
+            injected.old_value,
+            injected.target,
         )
     } else {
         let width: FieldWidth = args.width.as_ref().unwrap().parse()?;
         let offset = usize::try_from(parse_value(args.offset.as_ref().unwrap())?)
             .map_err(|_| anyhow::anyhow!("offset does not fit host usize"))?;
         let old_value = image.read_field(offset, width)?;
+        image.write_field(offset, width, new_value)?;
         (
             "offset",
             offset,
@@ -331,8 +359,6 @@ pub fn run(args: &InjectArgs) -> Result<()> {
             format!("offset_0x{offset:X}"),
         )
     };
-
-    image.write_field(offset, width, new_value)?;
 
     if args.fix_checksum {
         fix_checksum(&mut image)?;

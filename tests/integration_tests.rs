@@ -546,6 +546,25 @@ fn test_inject_field() {
 }
 
 #[test]
+fn test_inject_named_field_helper() {
+    let mut img = read_image(fixture("single.erofs")).unwrap();
+    let injected =
+        erofs_rs::inject::inject_named_field(&mut img, "superblock.root_nid", None, 0x1234)
+            .unwrap();
+
+    assert_eq!(injected.offset, EROFS_SUPER_OFFSET + 0x0E);
+    assert_eq!(injected.width, FieldWidth::U16);
+    assert_eq!(injected.old_value, 36);
+    assert_eq!(injected.new_value, 0x1234);
+    assert_eq!(injected.target, "superblock");
+    assert_eq!(
+        img.read_field(EROFS_SUPER_OFFSET + 0x0E, FieldWidth::U16)
+            .unwrap(),
+        0x1234
+    );
+}
+
+#[test]
 fn test_inject_late_superblock_field() {
     let tmp = TempDir::new().unwrap();
     let output = tmp.path().join("out.erofs");

@@ -49,6 +49,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "inject_named_field"
+path = "fuzz_targets/inject_named_field.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "xattr_parse"
 path = "fuzz_targets/xattr_parse.rs"
 test = false
