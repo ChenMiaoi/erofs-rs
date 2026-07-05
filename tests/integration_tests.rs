@@ -1023,10 +1023,15 @@ fn test_oracle_report_with_dump_check() {
 
     let content = fs::read_to_string(&report).unwrap();
     assert!(content.contains("rust_parser: accepted"));
+    assert!(content.contains("rust_strict_parser: accepted"));
+    assert!(content.contains("rust_tolerant_parser: accepted"));
     assert!(content.contains("fsck: accepted"));
     assert!(content.contains("sanitized_fsck: accepted"));
     assert!(content.contains("dump: accepted"));
     assert!(content.contains("checksum_repair_fsck: accepted"));
+    assert!(content.contains("rust_parser_vs_rust_strict_parser: agree"));
+    assert!(content.contains("rust_strict_parser_vs_rust_tolerant_parser: agree"));
+    assert!(content.contains("rust_parser_vs_rust_tolerant_parser: agree"));
     assert!(content.contains("rust_parser_vs_fsck: agree"));
     assert!(content.contains("fsck_vs_sanitized_fsck: agree"));
     assert!(content.contains("fsck_vs_checksum_repair_fsck: agree"));
@@ -1035,8 +1040,8 @@ fn test_oracle_report_with_dump_check() {
     let json: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(json_report).unwrap()).unwrap();
     assert_eq!(json["schema"], "erofs-rs.oracle-report.v1");
-    assert_eq!(json["checks"].as_array().unwrap().len(), 5);
-    assert_eq!(json["matrix"].as_array().unwrap().len(), 10);
+    assert_eq!(json["checks"].as_array().unwrap().len(), 7);
+    assert_eq!(json["matrix"].as_array().unwrap().len(), 21);
     assert_eq!(json["interesting_findings"], 0);
     assert!(
         json["checks"]
@@ -1051,6 +1056,20 @@ fn test_oracle_report_with_dump_check() {
             .unwrap()
             .iter()
             .any(|check| check["name"] == "sanitized_fsck" && check["status"] == "accepted")
+    );
+    assert!(
+        json["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|check| check["name"] == "rust_tolerant_parser" && check["status"] == "accepted")
+    );
+    assert!(
+        json["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|check| check["name"] == "rust_strict_parser" && check["status"] == "accepted")
     );
     assert!(
         json["matrix"]

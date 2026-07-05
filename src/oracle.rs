@@ -4,6 +4,7 @@ use crate::dirent::locate_dirents_in_image;
 use crate::fsck::{ExecLimits, FsckResult, run_fsck_with_limits};
 use crate::image::{Image, read_image, write_image};
 use crate::inode::locate_inodes;
+use crate::parse::{ParseMode, parse_image};
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use std::fs;
@@ -66,6 +67,8 @@ struct OracleMatrixEntry {
     right: String,
     left_status: String,
     right_status: String,
+    left_classification: String,
+    right_classification: String,
     verdict: String,
     disagrees: bool,
 }
@@ -157,6 +160,61 @@ fn run_rust_parser(image: &Image) -> OracleCheck {
     }
 }
 
+fn run_rust_strict_parser(image: &Image) -> OracleCheck {
+    match parse_image(image, ParseMode::Strict) {
+        Ok(report) => OracleCheck::accepted(
+            "rust_strict_parser",
+            "accepted",
+            format!(
+                "strict parser decoded {} inode(s) and {} dirent(s)",
+                report.inodes.iter().filter(|entry| entry.is_ok()).count(),
+                report.dirents.iter().filter(|entry| entry.is_ok()).count()
+            ),
+        ),
+        Err(error) => OracleCheck::rejected(
+            "rust_strict_parser",
+            "rejected_parse",
+            format!("strict parser failed: {error}"),
+        ),
+    }
+}
+
+fn run_rust_tolerant_parser(image: &Image) -> OracleCheck {
+    let report = match parse_image(image, ParseMode::FuzzTolerant) {
+        Ok(report) => report,
+        Err(error) => {
+            return OracleCheck::rejected(
+                "rust_tolerant_parser",
+                "rejected_parse",
+                format!("tolerant parser failed: {error}"),
+            );
+        }
+    };
+
+    if report.superblock.is_none() {
+        return OracleCheck::rejected(
+            "rust_tolerant_parser",
+            "rejected_parse",
+            "tolerant parser could not decode the superblock",
+        );
+    }
+
+    let parsed_inodes = report.inodes.iter().filter(|entry| entry.is_ok()).count();
+    let parsed_dirents = report.dirents.iter().filter(|entry| entry.is_ok()).count();
+    let reason = format!(
+        "tolerant parser recorded {} recoverable error(s), {} inode(s), {} dirent(s)",
+        report.errors.len(),
+        parsed_inodes,
+        parsed_dirents
+    );
+
+    if report.errors.is_empty() {
+        OracleCheck::accepted("rust_tolerant_parser", "accepted", reason)
+    } else {
+        OracleCheck::accepted("rust_tolerant_parser", "accepted_with_errors", reason)
+    }
+}
+
 fn fsck_check(args: &OracleArgs, input: &Path, limits: ExecLimits) -> Result<OracleCheck> {
     let result = run_fsck_with_limits(&args.fsck, input, &[], limits)?;
     Ok(tool_result_check("fsck", &result))
@@ -224,7 +282,8 @@ fn tool_result_check(name: &'static str, result: &FsckResult) -> OracleCheck {
 fn compare_checks(left: &OracleCheck, right: &OracleCheck) -> OracleMatrixEntry {
     let name = format!("{}_vs_{}", left.name, right.name);
     let skipped = !left.status.is_decision() || !right.status.is_decision();
-    let disagrees = !skipped && left.status != right.status;
+    let disagrees =
+        !skipped && (left.status != right.status || left.classification != right.classification);
     let verdict = if skipped {
         "skipped"
     } else if disagrees {
@@ -239,6 +298,8 @@ fn compare_checks(left: &OracleCheck, right: &OracleCheck) -> OracleMatrixEntry 
         right: right.name.to_string(),
         left_status: left.status.as_str().to_string(),
         right_status: right.status.as_str().to_string(),
+        left_classification: left.classification.clone(),
+        right_classification: right.classification.clone(),
         verdict: verdict.to_string(),
         disagrees,
     }
@@ -264,8 +325,15 @@ fn matrix_line(entry: &OracleMatrixEntry) -> String {
     }
 
     format!(
-        "- {}: {} ({}={}, {}={})",
-        entry.name, entry.verdict, entry.left, entry.left_status, entry.right, entry.right_status
+        "- {}: {} ({}={}/{}, {}={}/{})",
+        entry.name,
+        entry.verdict,
+        entry.left,
+        entry.left_status,
+        entry.left_classification,
+        entry.right,
+        entry.right_status,
+        entry.right_classification
     )
 }
 
@@ -343,6 +411,8 @@ pub fn run(args: &OracleArgs) -> Result<()> {
     let limits = limits_from_args(args);
     let checks = vec![
         run_rust_parser(&image),
+        run_rust_strict_parser(&image),
+        run_rust_tolerant_parser(&image),
         fsck_check(args, input, limits).context("failed to run fsck oracle")?,
         sanitized_fsck_check(args, input, limits).context("failed to run sanitized fsck oracle")?,
         dump_check(args, input, limits).context("failed to run dump oracle")?,
@@ -367,7 +437,19 @@ pub fn run(args: &OracleArgs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{OracleCheck, OracleStatus, compare_checks};
+    use super::{
+        OracleCheck, OracleStatus, compare_checks, run_rust_strict_parser, run_rust_tolerant_parser,
+    };
+    use crate::image::{FieldWidth, read_image};
+    use crate::parse::{ParseMode, parse_image};
+    use std::path::PathBuf;
+
+    fn fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join(name)
+    }
 
     #[test]
     fn agreement_detects_decision_disagreements() {
@@ -390,5 +472,33 @@ mod tests {
         assert_eq!(entry.verdict, "disagree");
         assert_eq!(entry.left_status, "accepted");
         assert_eq!(entry.right_status, "rejected");
+    }
+
+    #[test]
+    fn tolerant_parser_check_surfaces_recoverable_parse_errors() {
+        let mut image = read_image(fixture("single.erofs")).unwrap();
+        let report = parse_image(&image, ParseMode::FuzzTolerant).unwrap();
+        let dirent_offset = report
+            .dirents
+            .iter()
+            .find_map(|entry| entry.as_ref().ok().map(|dirent| dirent.offset))
+            .unwrap();
+        image
+            .write_field(dirent_offset + 0x0A, FieldWidth::U8, 0xFF)
+            .unwrap();
+
+        let strict = run_rust_strict_parser(&image);
+        let tolerant = run_rust_tolerant_parser(&image);
+        let entry = compare_checks(&strict, &tolerant);
+
+        assert_eq!(strict.status, OracleStatus::Accepted);
+        assert_eq!(strict.classification, "accepted");
+        assert_eq!(tolerant.status, OracleStatus::Accepted);
+        assert_eq!(tolerant.classification, "accepted_with_errors");
+        assert!(tolerant.reason.contains("recoverable error"));
+        assert!(entry.disagrees);
+        assert_eq!(entry.name, "rust_strict_parser_vs_rust_tolerant_parser");
+        assert_eq!(entry.left_classification, "accepted");
+        assert_eq!(entry.right_classification, "accepted_with_errors");
     }
 }
