@@ -20,6 +20,7 @@ pub mod kernel_replay;
 pub mod minimized;
 pub mod mutate;
 pub mod oracle;
+pub mod oracle_diff;
 pub mod parse;
 pub mod replay;
 pub mod seed_manifest;

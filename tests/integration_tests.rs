@@ -1087,6 +1087,9 @@ fn test_oracle_report_with_dump_check() {
     assert!(content.contains("fsck_vs_sanitized_fsck: agree"));
     assert!(content.contains("fsck_vs_kernel_replay: agree"));
     assert!(content.contains("fsck_vs_checksum_repair_fsck: agree"));
+    assert!(content.contains("## Detail Diffs"));
+    assert!(content.contains("parser_vs_dump_fields: skipped"));
+    assert!(content.contains("fsck_vs_kernel_behavior: agree"));
     assert!(content.contains("interesting_findings: 0"));
 
     let json_content = fs::read_to_string(json_report).unwrap();
@@ -1096,6 +1099,7 @@ fn test_oracle_report_with_dump_check() {
     assert_eq!(json["input_sha256"], file_sha256(&fixture("single.erofs")));
     assert_eq!(json["checks"].as_array().unwrap().len(), 8);
     assert_eq!(json["matrix"].as_array().unwrap().len(), 28);
+    assert_eq!(json["details"].as_array().unwrap().len(), 2);
     assert_eq!(json["interesting_findings"], 0);
     assert!(
         json["checks"]
@@ -1158,6 +1162,15 @@ fn test_oracle_report_with_dump_check() {
             .any(|entry| entry["name"] == "fsck_vs_kernel_replay"
                 && entry["verdict"] == "agree"
                 && entry["disagrees"] == false)
+    );
+    assert!(
+        json["details"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|detail| detail["name"] == "fsck_vs_kernel_behavior"
+                && detail["verdict"] == "agree"
+                && detail["disagrees"] == false)
     );
 
     let bucket_content = fs::read_to_string(&bucket_report).unwrap();

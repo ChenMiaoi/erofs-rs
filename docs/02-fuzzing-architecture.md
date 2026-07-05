@@ -63,8 +63,10 @@ metadata instead of guessing how an artifact was produced.
 5. Run differential checks.
    Use `erofs-rs oracle` to compare Rust parser verdicts, fsck, optional dump,
    checksum-repaired fsck, optional sanitized fsck, optional kernel replay
-   reports, and strict/tolerant parser behavior. Use JSON reports when later
-   tooling needs stable inputs.
+   reports, and strict/tolerant parser behavior. The oracle records both
+   check-level matrix rows and detail diffs for parser-vs-dump fields and
+   fsck-vs-kernel behavior, and maps disagreements into triage buckets. Use
+   JSON reports when later tooling needs stable inputs.
 
 6. Replay and bundle.
    Use `erofs-rs replay` to re-run a sidecar-described artifact. Finding

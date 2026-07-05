@@ -5,7 +5,10 @@ use crate::fsck::{ExecLimits, FsckResult, run_fsck_with_limits};
 use crate::fuzz::OutcomeKind;
 use crate::image::{Image, read_image, write_image};
 use crate::inode::locate_inodes;
-use crate::kernel_replay::{KernelReplayOutcome, parse_kernel_replay_report};
+use crate::kernel_replay::{KernelReplayOutcome, KernelReplayReport, parse_kernel_replay_report};
+use crate::oracle_diff::{
+    OracleDetail, detail_disagreement_count, fsck_vs_kernel_details, parser_vs_dump_details,
+};
 use crate::parse::{ParseMode, parse_image};
 use crate::triage::{
     FUZZ_BUCKET_REPORT_SCHEMA, FuzzBucket, FuzzBucketReport, validate_fuzz_bucket_report,
@@ -62,6 +65,8 @@ pub struct OracleJsonReport {
     pub input_sha256: Option<String>,
     pub checks: Vec<OracleJsonCheck>,
     pub matrix: Vec<OracleMatrixEntry>,
+    #[serde(default)]
+    pub details: Vec<OracleDetail>,
     pub interesting_findings: usize,
 }
 
@@ -139,6 +144,8 @@ pub enum OracleJsonReportError {
     },
     #[error("oracle JSON report interesting_findings is {actual}, expected {expected}")]
     InterestingFindingsMismatch { expected: usize, actual: usize },
+    #[error("oracle JSON report detail {detail} is invalid: {reason}")]
+    InvalidDetail { detail: String, reason: String },
 }
 
 pub fn parse_oracle_json_report(
@@ -200,11 +207,90 @@ pub fn validate_oracle_json_report(
     if let Some(entry) = missing_entries.into_iter().next() {
         return Err(OracleJsonReportError::MissingMatrixEntry(entry));
     }
-    let expected = interesting_findings(&report.matrix);
+    let mut detail_names = HashSet::new();
+    for detail in &report.details {
+        if !detail_names.insert(detail.name.as_str()) {
+            return Err(OracleJsonReportError::InvalidDetail {
+                detail: detail.name.clone(),
+                reason: "duplicate detail".to_string(),
+            });
+        }
+        validate_detail_entry(detail, &check_names)?;
+    }
+    let expected = interesting_findings(&report.matrix, &report.details);
     if report.interesting_findings != expected {
         return Err(OracleJsonReportError::InterestingFindingsMismatch {
             expected,
             actual: report.interesting_findings,
+        });
+    }
+    Ok(())
+}
+
+fn validate_detail_entry(
+    detail: &OracleDetail,
+    check_names: &HashSet<&str>,
+) -> std::result::Result<(), OracleJsonReportError> {
+    require_detail_nonempty(&detail.name, "details.name", &detail.name)?;
+    require_detail_nonempty(&detail.name, "details.kind", &detail.kind)?;
+    require_detail_nonempty(&detail.name, "details.left", &detail.left)?;
+    require_detail_nonempty(&detail.name, "details.right", &detail.right)?;
+    require_detail_nonempty(&detail.name, "details.summary", &detail.summary)?;
+    if !matches!(detail.kind.as_str(), "field_diff" | "behavior_diff") {
+        return Err(OracleJsonReportError::InvalidDetail {
+            detail: detail.name.clone(),
+            reason: format!("invalid kind {}", detail.kind),
+        });
+    }
+    if !matches!(detail.verdict.as_str(), "agree" | "disagree" | "skipped") {
+        return Err(OracleJsonReportError::InvalidDetail {
+            detail: detail.name.clone(),
+            reason: format!("invalid verdict {}", detail.verdict),
+        });
+    }
+    if detail.disagrees != (detail.verdict == "disagree") {
+        return Err(OracleJsonReportError::InvalidDetail {
+            detail: detail.name.clone(),
+            reason: "disagrees flag does not match verdict".to_string(),
+        });
+    }
+    if !check_names.contains(detail.left.as_str()) {
+        return Err(OracleJsonReportError::InvalidDetail {
+            detail: detail.name.clone(),
+            reason: format!("unknown left check {}", detail.left),
+        });
+    }
+    if !check_names.contains(detail.right.as_str()) {
+        return Err(OracleJsonReportError::InvalidDetail {
+            detail: detail.name.clone(),
+            reason: format!("unknown right check {}", detail.right),
+        });
+    }
+    let Some(field) = &detail.field else {
+        return Err(OracleJsonReportError::InvalidDetail {
+            detail: detail.name.clone(),
+            reason: "missing field".to_string(),
+        });
+    };
+    require_detail_nonempty(&detail.name, "details.field", field)?;
+    if let Some(value) = &detail.left_value {
+        require_detail_nonempty(&detail.name, "details.left_value", value)?;
+    }
+    if let Some(value) = &detail.right_value {
+        require_detail_nonempty(&detail.name, "details.right_value", value)?;
+    }
+    Ok(())
+}
+
+fn require_detail_nonempty(
+    detail: &str,
+    field: &'static str,
+    value: &str,
+) -> std::result::Result<(), OracleJsonReportError> {
+    if value.is_empty() {
+        return Err(OracleJsonReportError::InvalidDetail {
+            detail: detail.to_string(),
+            reason: format!("{field} is empty"),
         });
     }
     Ok(())
@@ -568,11 +654,6 @@ fn run_rust_tolerant_parser(image: &Image) -> OracleCheck {
     }
 }
 
-fn fsck_check(args: &OracleArgs, input: &Path, limits: ExecLimits) -> Result<OracleCheck> {
-    let result = run_fsck_with_limits(&args.fsck, input, &[], limits)?;
-    Ok(tool_result_check("fsck", &result))
-}
-
 fn sanitized_fsck_check(
     args: &OracleArgs,
     input: &Path,
@@ -588,57 +669,53 @@ fn sanitized_fsck_check(
     Ok(tool_result_check("sanitized_fsck", &result))
 }
 
-fn dump_check(args: &OracleArgs, input: &Path, limits: ExecLimits) -> Result<OracleCheck> {
+fn dump_result(args: &OracleArgs, input: &Path, limits: ExecLimits) -> Result<Option<FsckResult>> {
     let Some(dump) = &args.dump else {
-        return Ok(OracleCheck::skipped("dump", "no dump.erofs path supplied"));
+        return Ok(None);
     };
     let extra_args = vec!["-s".to_string()];
     let result = run_fsck_with_limits(dump, input, &extra_args, limits)?;
-    Ok(tool_result_check("dump", &result))
+    Ok(Some(result))
 }
 
-fn kernel_replay_check(args: &OracleArgs) -> Result<OracleCheck> {
+fn kernel_replay_report(args: &OracleArgs) -> Result<Option<KernelReplayReport>> {
     let Some(report_path) = &args.kernel_report else {
-        return Ok(OracleCheck::skipped(
-            "kernel_replay",
-            "no kernel replay report supplied",
-        ));
+        return Ok(None);
     };
 
     let content = fs::read_to_string(report_path)
         .with_context(|| format!("failed to read kernel replay report {report_path}"))?;
-    let report = parse_kernel_replay_report(&content)
-        .with_context(|| format!("failed to parse kernel replay report {report_path}"))?;
+    parse_kernel_replay_report(&content)
+        .with_context(|| format!("failed to parse kernel replay report {report_path}"))
+        .map(Some)
+}
+
+fn kernel_replay_check(report: Option<&KernelReplayReport>) -> OracleCheck {
+    let Some(report) = report else {
+        return OracleCheck::skipped("kernel_replay", "no kernel replay report supplied");
+    };
     let reason = format!("{} ({})", report.message, report.signature);
 
     match report.outcome {
-        KernelReplayOutcome::Accepted => {
-            Ok(OracleCheck::accepted("kernel_replay", "accepted", reason))
+        KernelReplayOutcome::Accepted => OracleCheck::accepted("kernel_replay", "accepted", reason),
+        KernelReplayOutcome::Rejected => {
+            OracleCheck::rejected("kernel_replay", "rejected_kernel", reason)
         }
-        KernelReplayOutcome::Rejected => Ok(OracleCheck::rejected(
-            "kernel_replay",
-            "rejected_kernel",
-            reason,
-        )),
         KernelReplayOutcome::Unsafe => {
             let pattern = report
                 .dangerous_pattern
                 .as_deref()
                 .unwrap_or("unknown dangerous pattern");
-            Ok(OracleCheck::rejected(
+            OracleCheck::rejected(
                 "kernel_replay",
                 "kernel_unsafe",
                 format!("{reason}; dangerous_pattern={pattern}"),
-            ))
+            )
         }
-        KernelReplayOutcome::Timeout => {
-            Ok(OracleCheck::rejected("kernel_replay", "timeout", reason))
+        KernelReplayOutcome::Timeout => OracleCheck::rejected("kernel_replay", "timeout", reason),
+        KernelReplayOutcome::Unknown => {
+            OracleCheck::rejected("kernel_replay", "kernel_unknown", reason)
         }
-        KernelReplayOutcome::Unknown => Ok(OracleCheck::rejected(
-            "kernel_replay",
-            "kernel_unknown",
-            reason,
-        )),
     }
 }
 
@@ -713,8 +790,8 @@ fn oracle_matrix(checks: &[OracleCheck]) -> Vec<OracleMatrixEntry> {
     matrix
 }
 
-fn interesting_findings(matrix: &[OracleMatrixEntry]) -> usize {
-    matrix.iter().filter(|entry| entry.disagrees).count()
+fn interesting_findings(matrix: &[OracleMatrixEntry], details: &[OracleDetail]) -> usize {
+    matrix.iter().filter(|entry| entry.disagrees).count() + detail_disagreement_count(details)
 }
 
 fn matrix_line(entry: &OracleMatrixEntry) -> String {
@@ -735,7 +812,28 @@ fn matrix_line(entry: &OracleMatrixEntry) -> String {
     )
 }
 
-fn render_report(input: &Path, checks: &[OracleCheck], matrix: &[OracleMatrixEntry]) -> String {
+fn detail_line(detail: &OracleDetail) -> String {
+    let values = match (&detail.left_value, &detail.right_value) {
+        (Some(left_value), Some(right_value)) => {
+            format!(
+                " ({}={}, {}={})",
+                detail.left, left_value, detail.right, right_value
+            )
+        }
+        _ => String::new(),
+    };
+    format!(
+        "- {}: {} [{}]{} - {}",
+        detail.name, detail.verdict, detail.kind, values, detail.summary
+    )
+}
+
+fn render_report(
+    input: &Path,
+    checks: &[OracleCheck],
+    matrix: &[OracleMatrixEntry],
+    details: &[OracleDetail],
+) -> String {
     let mut lines = vec![
         "# EROFS Userspace Oracle Report".to_string(),
         String::new(),
@@ -761,9 +859,22 @@ fn render_report(input: &Path, checks: &[OracleCheck], matrix: &[OracleMatrixEnt
         lines.push(matrix_line(entry));
     }
 
+    lines.extend([String::new(), "## Detail Diffs".to_string(), String::new()]);
+
+    if details.is_empty() {
+        lines.push("- none".to_string());
+    } else {
+        for detail in details {
+            lines.push(detail_line(detail));
+        }
+    }
+
     lines.extend([
         String::new(),
-        format!("interesting_findings: {}", interesting_findings(matrix)),
+        format!(
+            "interesting_findings: {}",
+            interesting_findings(matrix, details)
+        ),
     ]);
 
     lines.join("\n") + "\n"
@@ -774,6 +885,7 @@ fn json_report(
     input_sha256: &str,
     checks: &[OracleCheck],
     matrix: &[OracleMatrixEntry],
+    details: &[OracleDetail],
 ) -> OracleJsonReport {
     OracleJsonReport {
         schema: ORACLE_REPORT_SCHEMA.to_string(),
@@ -789,7 +901,8 @@ fn json_report(
             })
             .collect(),
         matrix: matrix.to_vec(),
-        interesting_findings: interesting_findings(matrix),
+        details: details.to_vec(),
+        interesting_findings: interesting_findings(matrix, details),
     }
 }
 
@@ -806,10 +919,24 @@ fn oracle_bucket_reason(entry: &OracleMatrixEntry) -> String {
     )
 }
 
+fn oracle_detail_bucket_reason(detail: &OracleDetail) -> String {
+    let values = match (&detail.left_value, &detail.right_value) {
+        (Some(left_value), Some(right_value)) => {
+            format!(
+                ": {}={}, {}={}",
+                detail.left, left_value, detail.right, right_value
+            )
+        }
+        _ => String::new(),
+    };
+    format!("{} disagrees{values}; {}", detail.name, detail.summary)
+}
+
 fn oracle_bucket_report(
     input: &Path,
     text_report_path: &str,
     matrix: &[OracleMatrixEntry],
+    details: &[OracleDetail],
 ) -> Result<FuzzBucketReport> {
     let outcome_kind = OutcomeKind::from_classification(ORACLE_DISAGREEMENT_CLASSIFICATION);
     let example_seed_name = input
@@ -825,6 +952,21 @@ fn oracle_bucket_report(
         let reason = oracle_bucket_reason(entry);
         buckets.push(FuzzBucket {
             signature: format!("{ORACLE_DISAGREEMENT_CLASSIFICATION}: {}", entry.name),
+            classification: ORACLE_DISAGREEMENT_CLASSIFICATION.to_string(),
+            outcome_kind: outcome_kind.label().to_string(),
+            count: 1,
+            first_iteration,
+            example_seed_name: example_seed_name.clone(),
+            reason,
+        });
+    }
+    let matrix_disagreements = buckets.len();
+    for (index, detail) in details.iter().filter(|detail| detail.disagrees).enumerate() {
+        let first_iteration = u64::try_from(matrix_disagreements + index + 1)
+            .context("oracle detail disagreement index overflows u64")?;
+        let reason = oracle_detail_bucket_reason(detail);
+        buckets.push(FuzzBucket {
+            signature: format!("{ORACLE_DISAGREEMENT_CLASSIFICATION}: {}", detail.name),
             classification: ORACLE_DISAGREEMENT_CLASSIFICATION.to_string(),
             outcome_kind: outcome_kind.label().to_string(),
             count: 1,
@@ -886,26 +1028,36 @@ pub fn run(args: &OracleArgs) -> Result<()> {
     let image = read_image(input).with_context(|| format!("failed to read {}", input.display()))?;
     let input_sha256 = image_sha256(&image);
     let limits = limits_from_args(args);
+    let fsck_result = run_fsck_with_limits(&args.fsck, input, &[], limits)
+        .context("failed to run fsck oracle")?;
+    let dump_result = dump_result(args, input, limits).context("failed to run dump oracle")?;
+    let kernel_report =
+        kernel_replay_report(args).context("failed to read kernel replay oracle")?;
     let checks = vec![
         run_rust_parser(&image),
         run_rust_strict_parser(&image),
         run_rust_tolerant_parser(&image),
-        fsck_check(args, input, limits).context("failed to run fsck oracle")?,
+        tool_result_check("fsck", &fsck_result),
         sanitized_fsck_check(args, input, limits).context("failed to run sanitized fsck oracle")?,
-        dump_check(args, input, limits).context("failed to run dump oracle")?,
-        kernel_replay_check(args).context("failed to read kernel replay oracle")?,
+        dump_result
+            .as_ref()
+            .map(|result| tool_result_check("dump", result))
+            .unwrap_or_else(|| OracleCheck::skipped("dump", "no dump.erofs path supplied")),
+        kernel_replay_check(kernel_report.as_ref()),
         checksum_repair_check(args, &image, limits)
             .context("failed to run checksum repair oracle")?,
     ];
     let matrix = oracle_matrix(&checks);
-    let report = render_report(input, &checks, &matrix);
+    let mut details = parser_vs_dump_details(&image, dump_result.as_ref());
+    details.extend(fsck_vs_kernel_details(&fsck_result, kernel_report.as_ref()));
+    let report = render_report(input, &checks, &matrix, &details);
 
     if let Some(report_path) = &args.report {
         fs::write(report_path, &report)
             .map_err(|e| anyhow::anyhow!("failed to write oracle report {report_path}: {e}"))?;
     }
     if let Some(report_path) = &args.json_report {
-        let json = json_report(input, &input_sha256, &checks, &matrix);
+        let json = json_report(input, &input_sha256, &checks, &matrix, &details);
         write_json_report(report_path, &json)?;
     }
     if let Some(report_path) = &args.bucket_report {
@@ -914,7 +1066,7 @@ pub fn run(args: &OracleArgs) -> Result<()> {
             .clone()
             .or_else(|| args.json_report.clone())
             .unwrap_or_else(|| input.to_string_lossy().to_string());
-        let buckets = oracle_bucket_report(input, &text_report_path, &matrix)?;
+        let buckets = oracle_bucket_report(input, &text_report_path, &matrix, &details)?;
         write_bucket_report(report_path, &buckets)?;
     }
 
@@ -930,6 +1082,7 @@ mod tests {
         run_rust_tolerant_parser,
     };
     use crate::image::{FieldWidth, read_image};
+    use crate::oracle_diff::OracleDetail;
     use crate::parse::{ParseMode, parse_image};
     use crate::triage::parse_fuzz_bucket_report;
     use std::path::{Path, PathBuf};
@@ -996,6 +1149,7 @@ mod tests {
             Path::new("sample.erofs"),
             "oracle-report.txt",
             &oracle.matrix,
+            &oracle.details,
         )
         .unwrap();
         let content = serde_json::to_string(&report).unwrap();
@@ -1019,6 +1173,47 @@ mod tests {
     }
 
     #[test]
+    fn oracle_bucket_report_maps_detail_disagreements_to_triage_buckets() {
+        let detail = OracleDetail {
+            name: "parser_vs_dump_field_block_size".to_string(),
+            kind: "field_diff".to_string(),
+            left: "rust_tolerant_parser".to_string(),
+            right: "dump".to_string(),
+            field: Some("block_size".to_string()),
+            left_value: Some("4096".to_string()),
+            right_value: Some("1024".to_string()),
+            verdict: "disagree".to_string(),
+            disagrees: true,
+            summary: "field block_size differs".to_string(),
+        };
+
+        let report = oracle_bucket_report(
+            Path::new("sample.erofs"),
+            "oracle-report.txt",
+            &[],
+            &[detail],
+        )
+        .unwrap();
+        let content = serde_json::to_string(&report).unwrap();
+
+        let parsed = parse_fuzz_bucket_report(&content).unwrap();
+
+        assert_eq!(parsed.actionable_findings, 1);
+        assert_eq!(parsed.buckets.len(), 1);
+        assert_eq!(parsed.buckets[0].classification, "oracle_disagreement");
+        assert_eq!(parsed.buckets[0].outcome_kind, "interesting_semantic");
+        assert_eq!(
+            parsed.buckets[0].signature,
+            "oracle_disagreement: parser_vs_dump_field_block_size"
+        );
+        assert!(
+            parsed.buckets[0]
+                .reason
+                .contains("rust_tolerant_parser=4096")
+        );
+    }
+
+    #[test]
     fn oracle_json_report_parser_accepts_legacy_report_without_input_hash() {
         let mut report: serde_json::Value = serde_json::from_str(VALID_JSON_REPORT).unwrap();
         report.as_object_mut().unwrap().remove("input_sha256");
@@ -1027,6 +1222,32 @@ mod tests {
         let report = parse_oracle_json_report(&report).unwrap();
 
         assert_eq!(report.input_sha256, None);
+    }
+
+    #[test]
+    fn oracle_json_report_parser_accepts_detail_disagreements() {
+        let mut report: serde_json::Value = serde_json::from_str(VALID_JSON_REPORT).unwrap();
+        report["details"] = serde_json::json!([
+            {
+                "name": "rust_parser_vs_fsck_behavior",
+                "kind": "behavior_diff",
+                "left": "rust_parser",
+                "right": "fsck",
+                "field": "behavior",
+                "left_value": "rejected",
+                "right_value": "unsafe",
+                "verdict": "disagree",
+                "disagrees": true,
+                "summary": "rust parser behavior rejected vs fsck behavior unsafe"
+            }
+        ]);
+        report["interesting_findings"] = serde_json::json!(2);
+        let report = serde_json::to_string(&report).unwrap();
+
+        let report = parse_oracle_json_report(&report).unwrap();
+
+        assert_eq!(report.details.len(), 1);
+        assert_eq!(report.interesting_findings, 2);
     }
 
     #[test]

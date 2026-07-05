@@ -296,11 +296,18 @@ erofs-rs oracle \
 ```
 
 The report stores the input path, input SHA-256, individual check verdicts,
-pairwise matrix rows, and the number of disagreeing rows. The Rust library
-parser rejects unknown schemas, unknown fields, empty required fields,
-malformed input digests, invalid status or verdict values, inconsistent
-`disagrees` flags or matrix verdicts, and mismatched
-`interesting_findings` counts. It also rejects skipped checks whose
+pairwise matrix rows, detail diffs, and the number of disagreeing rows. Detail
+diffs currently cover parser-vs-dump superblock fields and fsck-vs-kernel
+behavior. A parser-vs-dump field diff compares stable `dump.erofs -s` values
+such as magic, block size, block count, metadata block, root nid, sb size, and
+inode count against the Rust parser. A fsck-vs-kernel behavior diff compares
+accepted, rejected, unsafe, timeout, and unknown behavior instead of only raw
+tool classifications.
+
+The Rust library parser rejects unknown schemas, unknown fields, empty required
+fields, malformed input digests, invalid status or verdict values,
+inconsistent `disagrees` flags or matrix verdicts, malformed detail rows, and
+mismatched `interesting_findings` counts. It also rejects skipped checks whose
 classification is not `skipped`, non-skipped checks that use the `skipped`
 classification, duplicate checks, duplicate matrix rows, matrix rows that
 reference checks missing from the report, rows that copy status or
@@ -308,9 +315,10 @@ classification values that differ from the referenced checks, and reports that
 omit the canonical row for any check pair.
 When `--bucket-report` is supplied, each oracle disagreement is also written as
 an `erofs-rs.fuzz-buckets.v1` bucket with the `oracle_disagreement`
-classification and `interesting_semantic` outcome kind. That lets
-`erofs-rs triage` merge oracle findings with campaign bucket reports instead
-of requiring a separate disagreement review path.
+classification and `interesting_semantic` outcome kind. Matrix disagreements
+and detail disagreements both enter the bucket report, letting `erofs-rs
+triage` merge oracle findings with campaign bucket reports instead of requiring
+a separate disagreement review path.
 When `--kernel-report` is supplied, the oracle parses the existing
 `erofs-rs.kernel-replay.v1` JSON report and adds it as a matrix check instead
 of starting QEMU itself.

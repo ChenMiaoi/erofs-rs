@@ -433,9 +433,12 @@ optional `dump.erofs -s`, an optional `erofs-rs.kernel-replay.v1` report, and
 `fsck.erofs` after Rust checksum repair. Disagreements are reported as
 interesting findings so parser/tool/checksum/sanitizer/kernel mismatches can be
 triaged separately from ordinary malformed image rejections. `--json-report`
-writes the input SHA-256, the same checks, pairwise matrix verdicts, and
-interesting-finding count with the stable `erofs-rs.oracle-report.v1` schema
-for campaign automation. `--bucket-report` emits disagreements as
+writes the input SHA-256, the same checks, pairwise matrix verdicts, detail
+diffs, and interesting-finding count with the stable
+`erofs-rs.oracle-report.v1` schema for campaign automation. Detail diffs
+include parser-vs-dump superblock field mismatches and fsck-vs-kernel behavior
+mismatches such as safe userspace rejection versus unsafe kernel output.
+`--bucket-report` emits matrix and detail disagreements as
 `erofs-rs.fuzz-buckets.v1` entries with the `oracle_disagreement`
 classification and `interesting_semantic` outcome kind so `erofs-rs triage`
 can merge them with fuzz campaign buckets. The parser rejects malformed input
@@ -444,9 +447,9 @@ checks, duplicate matrix rows, inconsistent matrix verdicts, and matrix rows
 that reference checks missing from the report or copy status/classification
 values that differ from the referenced checks. It also rejects skipped checks
 whose classification is not `skipped`, and non-skipped checks that use the
-`skipped` classification. The matrix must contain the canonical row for every
-check pair so incomplete oracle reports
-cannot hide a disagreement.
+`skipped` classification, malformed detail rows, and mismatched
+`interesting_findings` counts. The matrix must contain the canonical row for
+every check pair so incomplete oracle reports cannot hide a disagreement.
 
 ## Library usage
 
