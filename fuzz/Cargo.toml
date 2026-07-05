@@ -89,3 +89,10 @@ path = "fuzz_targets/kernel_dmesg_classify.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "report_schema_parse"
+path = "fuzz_targets/report_schema_parse.rs"
+test = false
+doc = false
+bench = false
