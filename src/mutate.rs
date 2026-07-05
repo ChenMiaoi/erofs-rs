@@ -475,6 +475,7 @@ const DIRENT_FIELDS: &[MutationDef] = &[
 
 struct MutatedEntry {
     output_name: String,
+    family: String,
     target_desc: String,
     field_name: String,
     mutation_name: String,
@@ -520,6 +521,7 @@ fn mutate_superblock(image: &Image, args: &MutateArgs) -> Result<Vec<MutatedEntr
 
             entries.push(MutatedEntry {
                 output_name,
+                family: "superblock".to_string(),
                 target_desc: "superblock".to_string(),
                 field_name: def.field_name.to_string(),
                 mutation_name: mutation_name.to_string(),
@@ -584,6 +586,7 @@ fn mutate_inodes(image: &Image, args: &MutateArgs) -> Result<Vec<MutatedEntry>> 
 
                 entries.push(MutatedEntry {
                     output_name,
+                    family: "inode".to_string(),
                     target_desc: inode.desc.clone(),
                     field_name: def.field_name.to_string(),
                     mutation_name: mutation_name.to_string(),
@@ -652,6 +655,7 @@ fn mutate_dirents(image: &Image, args: &MutateArgs) -> Result<Vec<MutatedEntry>>
 
                 entries.push(MutatedEntry {
                     output_name,
+                    family: "dirent".to_string(),
                     target_desc: dirent.desc.clone(),
                     field_name: def.field_name.to_string(),
                     mutation_name: mutation_name.to_string(),
@@ -678,8 +682,10 @@ fn write_manifest<P: AsRef<Path>>(
 ) -> Result<()> {
     let seed = seed_name(&args.input);
     let mut counts: HashMap<String, usize> = HashMap::new();
+    let mut family_counts: HashMap<String, usize> = HashMap::new();
     for e in entries {
         *counts.entry(e.classification.clone()).or_insert(0) += 1;
+        *family_counts.entry(e.family.clone()).or_insert(0) += 1;
     }
 
     let mut lines = vec![
@@ -710,17 +716,32 @@ fn write_manifest<P: AsRef<Path>>(
     }
 
     lines.push(String::new());
-    let summary = counts
-        .iter()
-        .map(|(k, v)| format!("{k}={v}"))
+    let summary = sorted_counts(&counts)
+        .into_iter()
+        .map(|(classification, count)| format!("{classification}={count}"))
         .collect::<Vec<_>>()
         .join(", ");
     lines.push(format!("# Summary: total={}, {summary}", entries.len()));
+    let families = sorted_counts(&family_counts)
+        .into_iter()
+        .map(|(family, count)| format!("{family}={count}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    lines.push(format!("# Families: {families}"));
 
     fs::write(path.as_ref(), lines.join("\n") + "\n").map_err(|e| {
         anyhow::anyhow!("failed to write manifest {}: {e}", path.as_ref().display())
     })?;
     Ok(())
+}
+
+fn sorted_counts(counts: &HashMap<String, usize>) -> Vec<(&str, usize)> {
+    let mut items = counts
+        .iter()
+        .map(|(name, count)| (name.as_str(), *count))
+        .collect::<Vec<_>>();
+    items.sort_by(|a, b| a.0.cmp(b.0));
+    items
 }
 
 pub fn run(args: &MutateArgs) -> Result<()> {
