@@ -38,6 +38,9 @@ reviewable patches matter more than cleverness or convenience.
 - Use `cargo fmt` formatting. Do not hand-format against `rustfmt`.
 - Keep code idiomatic and boring: clear data types, small functions, explicit
   names, and straightforward control flow.
+- Keep individual `.rs` source files at or below 1600 lines whenever practical.
+  If an existing Rust file exceeds that size, split it along clear module and
+  ownership boundaries instead of adding to it.
 - Prefer `Result<T, E>` over panics for library and CLI implementation paths.
   Panics are acceptable only in tests or for truly impossible internal states
   with a clear invariant.
