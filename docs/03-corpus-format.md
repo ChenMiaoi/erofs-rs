@@ -89,9 +89,17 @@ digests, unsafe seed file names, paths with parent-directory components, paths
 whose file name does not match the `seed` field, and duplicate feature tags
 within one entry. The `seed-manifest` command also checks semantic coverage for
 the generated matrix: required entries must still cover the baseline plain,
-large-directory, chunked, packed-fragment, and special-file combinations, and
-host-dependent profiles must carry their corresponding xattr, ACL, socket, or
-device-node feature tags whenever those best-effort seeds are generated.
+large-directory, chunked, packed-fragment, special-file, Android-profile,
+container-profile, and Linux-rootfs-profile combinations. Host-dependent
+profiles must carry their corresponding xattr, xattr-combo, ACL, socket,
+device-node, or real-world root feature tags whenever those best-effort seeds
+are generated.
+
+`generate-seed-matrix.sh` accepts `--android-root`, `--container-root`, and
+`--rootfs-root` to fold real source trees into the same manifest schema. These
+entries are marked `best_effort` and tagged with `sample:real` plus the
+corresponding `workload:*` feature so they can be separated from the small
+generated profile roots during triage.
 
 ## Coverage Corpus Manifest
 

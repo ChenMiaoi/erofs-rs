@@ -174,10 +174,23 @@ pub fn validate_seed_matrix_semantic_coverage(
             "xattr_long_prefix" => &["xattrs:user", "xattrs:long_prefix"][..],
             "xattr_shared" => &["xattrs:user", "xattrs:shared"][..],
             "xattr_name_filter" => &["xattrs:user", "xattrs:name_filter"][..],
+            "xattr_combo" => &[
+                "xattrs:user",
+                "xattrs:shared",
+                "xattrs:long_prefix",
+                "xattrs:name_filter",
+                "feature_combo:xattr_all",
+            ][..],
             "acl_posix" => &["acl:posix"][..],
             "special_files" => &["hardlink:true", "fifo:true", "symlink:true"][..],
             "socket" => &["socket:true"][..],
             "device_node" => &["device:char"][..],
+            "android_profile" => &["workload:android", "profile:generated"][..],
+            "container_profile" => &["workload:container", "profile:generated"][..],
+            "rootfs_profile" => &["workload:rootfs", "profile:generated"][..],
+            "android_real" => &["workload:android", "sample:real"][..],
+            "container_real" => &["workload:container", "sample:real"][..],
+            "rootfs_real" => &["workload:rootfs", "sample:real"][..],
             _ => &[][..],
         };
         for feature in expected_features {
@@ -223,6 +236,22 @@ const REQUIRED_COMBINATIONS: &[(&str, &[&str])] = &[
     (
         "special-file seed",
         &["hardlink:true", "fifo:true", "symlink:true"],
+    ),
+    (
+        "android profile seed",
+        &["workload:android", "profile:generated", "dir_size:profile"],
+    ),
+    (
+        "container profile seed",
+        &[
+            "workload:container",
+            "profile:generated",
+            "dir_size:profile",
+        ],
+    ),
+    (
+        "rootfs profile seed",
+        &["workload:rootfs", "profile:generated", "dir_size:profile"],
     ),
 ];
 
@@ -663,6 +692,45 @@ mod tests {
                     "packed_inode:true",
                 ],
             ),
+            semantic_entry(
+                "android-profile-4k",
+                "android_profile",
+                SeedRequirement::Required,
+                &[
+                    "block_size:4096",
+                    "compression:none",
+                    "layout:plain",
+                    "dir_size:profile",
+                    "workload:android",
+                    "profile:generated",
+                ],
+            ),
+            semantic_entry(
+                "container-profile-4k",
+                "container_profile",
+                SeedRequirement::Required,
+                &[
+                    "block_size:4096",
+                    "compression:none",
+                    "layout:plain",
+                    "dir_size:profile",
+                    "workload:container",
+                    "profile:generated",
+                ],
+            ),
+            semantic_entry(
+                "rootfs-profile-4k",
+                "rootfs_profile",
+                SeedRequirement::Required,
+                &[
+                    "block_size:4096",
+                    "compression:none",
+                    "layout:plain",
+                    "dir_size:profile",
+                    "workload:rootfs",
+                    "profile:generated",
+                ],
+            ),
         ]
     }
 
@@ -708,10 +776,61 @@ mod tests {
         assert!(matches!(
             error,
             SeedManifestError::MissingProfileFeature {
-                index: 5,
+                index: 8,
                 source_profile,
                 feature: "xattrs:shared",
             } if source_profile == "xattr_shared"
+        ));
+    }
+
+    #[test]
+    fn seed_matrix_semantics_accept_xattr_combo_profile() {
+        let mut entries = semantic_entries();
+        entries.push(semantic_entry(
+            "xattr-combo-4k",
+            "xattr_combo",
+            SeedRequirement::BestEffort,
+            &[
+                "block_size:4096",
+                "compression:none",
+                "layout:plain",
+                "dir_size:small",
+                "xattrs:user",
+                "xattrs:shared",
+                "xattrs:long_prefix",
+                "xattrs:name_filter",
+                "feature_combo:xattr_all",
+            ],
+        ));
+
+        validate_seed_matrix_semantic_coverage(&entries).unwrap();
+    }
+
+    #[test]
+    fn seed_matrix_semantics_reject_real_profile_feature_mismatch() {
+        let mut entries = semantic_entries();
+        entries.push(semantic_entry(
+            "android-real-4k",
+            "android_real",
+            SeedRequirement::BestEffort,
+            &[
+                "block_size:4096",
+                "compression:none",
+                "layout:plain",
+                "dir_size:real_world",
+                "sample:real",
+            ],
+        ));
+
+        let error = validate_seed_matrix_semantic_coverage(&entries).unwrap_err();
+
+        assert!(matches!(
+            error,
+            SeedManifestError::MissingProfileFeature {
+                index: 8,
+                source_profile,
+                feature: "workload:android",
+            } if source_profile == "android_real"
         ));
     }
 

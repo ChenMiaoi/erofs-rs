@@ -391,7 +391,8 @@ The basic and complex seed scripts create a small hand-written corpus. For
 feature coverage, `generate-seed-matrix.sh` builds a reproducible matrix with
 block-size, compression, user-xattr, shared xattr, xattr name filter, long
 xattr prefix, POSIX ACL, large-directory, special-file, socket, device-node,
-chunked-file, and packed-fragment variants when the host tools can create them:
+chunked-file, packed-fragment, Android-profile, container-profile, and
+Linux-rootfs-profile variants when the host tools can create them:
 
 ```bash
 ./scripts/generate-seed-matrix.sh
@@ -399,6 +400,10 @@ chunked-file, and packed-fragment variants when the host tools can create them:
     --output-dir /tmp/seed-matrix \
     --block-size 1024,4096 \
     --compression none,lz4
+./scripts/generate-seed-matrix.sh \
+    --android-root /path/to/android/root \
+    --container-root /path/to/container/rootfs \
+    --rootfs-root /path/to/linux/rootfs
 erofs-rs seed-manifest --manifest /tmp/seed-matrix/manifest.json
 ```
 
@@ -406,16 +411,20 @@ The script writes `manifest.json` next to the generated images with the source
 profile, requirement level, mkfs command, mkfs version, erofs-utils revision,
 feature tags, and full SHA-256 for each seed. `required` entries are expected
 to build on ordinary CI hosts, while `best_effort` entries depend on host
-capabilities such as xattr, ACL, socket, or device-node support. Use
+capabilities such as xattr, ACL, socket, device-node support, or an explicitly
+provided real Android/container/rootfs tree. The generated xattr-combo profile
+combines shared xattrs, long xattr prefixes, and xattr name filters, including
+compressed and packed-fragment variants when LZ4 is enabled. Use
 `erofs-rs seed-manifest --manifest ...` to validate generated manifests before
 CI or review tooling consumes them. Feature tags must use `namespace:value`
 form. The Rust validator checks required fields, unique seed paths and
 digests, safe seed file names, path-to-seed consistency, per-entry feature
 uniqueness, feature tag shape, and SHA-256 width. It also checks that required
 matrix entries still cover the baseline plain, multiblock directory, chunked,
-packed-fragment, and special-file combinations, and that host-dependent
-profiles such as shared xattrs, xattr filters, ACLs, sockets, and device nodes
-carry the expected feature tags when they are present.
+packed-fragment, special-file, Android-profile, container-profile, and
+Linux-rootfs-profile combinations, and that host-dependent profiles such as
+shared xattrs, xattr filters, xattr-combo seeds, ACLs, sockets, device nodes,
+and real-world roots carry the expected feature tags when they are present.
 
 ### `oracle` – userspace differential checks
 

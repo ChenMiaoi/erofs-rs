@@ -15,6 +15,9 @@ MKFS="${MKFS:-$ROOT_DIR/build/erofs-utils/mkfs/mkfs.erofs}"
 OUT_DIR="$ROOT_DIR/corpus/seeds/matrix"
 BLOCK_SIZES="512,1024,2048,4096"
 COMPRESSIONS="none,lz4,lz4hc,zstd"
+ANDROID_ROOT="${ANDROID_ROOT:-}"
+CONTAINER_ROOT="${CONTAINER_ROOT:-}"
+ROOTFS_ROOT="${ROOTFS_ROOT:-}"
 
 usage() {
     cat <<EOF
@@ -24,6 +27,9 @@ Options:
   --output-dir DIR        Output directory (default: corpus/seeds/matrix)
   --block-size LIST       Comma-separated block sizes (default: 512,1024,2048,4096)
   --compression LIST      Comma-separated compressors (default: none,lz4,lz4hc,zstd)
+  --android-root DIR      Include a real Android root tree as a best-effort seed
+  --container-root DIR    Include a real container rootfs tree as a best-effort seed
+  --rootfs-root DIR       Include a real Linux rootfs tree as a best-effort seed
   -h, --help              Show this help
 EOF
 }
@@ -54,6 +60,21 @@ while [ "$#" -gt 0 ]; do
         --compression)
             need_value "$1" "${2:-}"
             COMPRESSIONS="$2"
+            shift 2
+            ;;
+        --android-root)
+            need_value "$1" "${2:-}"
+            ANDROID_ROOT="$2"
+            shift 2
+            ;;
+        --container-root)
+            need_value "$1" "${2:-}"
+            CONTAINER_ROOT="$2"
+            shift 2
+            ;;
+        --rootfs-root)
+            need_value "$1" "${2:-}"
+            ROOTFS_ROOT="$2"
             shift 2
             ;;
         -h|--help)
@@ -101,6 +122,20 @@ git_revision() {
 
 sha256_file() {
     sha256sum "$1" | awk '{print $1}'
+}
+
+csv_has() {
+    local needle="$1"
+    local csv="$2"
+    local -a items
+    local item
+    IFS=',' read -r -a items <<< "$csv"
+    for item in "${items[@]}"; do
+        if [ "$item" = "$needle" ]; then
+            return 0
+        fi
+    done
+    return 1
 }
 
 append_manifest() {
@@ -206,6 +241,25 @@ make_xattr_filter_root() {
         2>/dev/null
 }
 
+make_xattr_combo_root() {
+    local root="$1"
+    mkdir -p "$root"
+    printf 'xattr combo alpha\n' > "$root/combo-a.txt"
+    printf 'xattr combo beta\n' > "$root/combo-b.txt"
+    printf 'xattr combo gamma\n' > "$root/combo-c.txt"
+    if ! command -v setfattr >/dev/null 2>&1; then
+        return 1
+    fi
+    for file in "$root/combo-a.txt" "$root/combo-b.txt" "$root/combo-c.txt"; do
+        setfattr -n user.matrix.combo.shared -v "shared-combo" "$file" \
+            2>/dev/null || return 1
+        setfattr -n user.matrix.combo.long.alpha -v "alpha" "$file" \
+            2>/dev/null || return 1
+        setfattr -n user.matrix.combo.filter -v "filter" "$file" \
+            2>/dev/null || return 1
+    done
+}
+
 make_acl_root() {
     local root="$1"
     mkdir -p "$root"
@@ -252,6 +306,51 @@ make_device_root() {
     mknod "$root/null" c 1 3 2>/dev/null
 }
 
+make_android_profile_root() {
+    local root="$1"
+    mkdir -p "$root/system/etc/permissions" "$root/system/bin" \
+        "$root/vendor/etc" "$root/product/app/MatrixApp" "$root/apex"
+    printf 'ro.build.version.sdk=35\nro.product.name=erofs_matrix\n' \
+        > "$root/system/build.prop"
+    printf '<permissions><library name="matrix"/></permissions>\n' \
+        > "$root/system/etc/permissions/platform.xml"
+    printf '#!/system/bin/sh\necho android-matrix\n' > "$root/system/bin/matrix"
+    chmod 0755 "$root/system/bin/matrix"
+    printf '/dev/block/by-name/system /system erofs ro wait\n' \
+        > "$root/vendor/etc/fstab.erofs"
+    printf 'placeholder apk payload\n' > "$root/product/app/MatrixApp/MatrixApp.apk"
+    ln -s ../system/build.prop "$root/vendor/build.prop.link" 2>/dev/null || true
+}
+
+make_container_profile_root() {
+    local root="$1"
+    mkdir -p "$root/etc" "$root/usr/bin" "$root/var/lib/dpkg" \
+        "$root/var/log" "$root/root"
+    printf 'ID=matrix-container\nVERSION_ID=1\n' > "$root/etc/os-release"
+    printf '#!/bin/sh\necho container-matrix\n' > "$root/usr/bin/matrix-app"
+    chmod 0755 "$root/usr/bin/matrix-app"
+    printf 'Package: matrix\nStatus: install ok installed\n' \
+        > "$root/var/lib/dpkg/status"
+    printf 'container log\n' > "$root/var/log/app.log"
+    printf 'PATH=/usr/bin\n' > "$root/root/.profile"
+    ln -s ../usr/bin/matrix-app "$root/etc/matrix-app" 2>/dev/null || true
+}
+
+make_linux_rootfs_profile_root() {
+    local root="$1"
+    mkdir -p "$root/bin" "$root/etc/init.d" "$root/lib/modules" \
+        "$root/usr/lib" "$root/var/cache" "$root/dev"
+    printf '#!/bin/sh\necho rootfs-matrix\n' > "$root/bin/init"
+    chmod 0755 "$root/bin/init"
+    printf 'root:x:0:0:root:/root:/bin/sh\n' > "$root/etc/passwd"
+    printf 'matrix-rootfs\n' > "$root/etc/hostname"
+    printf '#!/bin/sh\nmount -t proc proc /proc\n' > "$root/etc/init.d/rcS"
+    chmod 0755 "$root/etc/init.d/rcS"
+    printf 'module metadata placeholder\n' > "$root/lib/modules/modules.dep"
+    printf 'cache entry\n' > "$root/var/cache/matrix.cache"
+    ln -s bin/init "$root/init" 2>/dev/null || true
+}
+
 run_mkfs() {
     local seed="$1"
     local source="$2"
@@ -277,6 +376,26 @@ run_mkfs() {
         echo "WARN: skipped $seed (mkfs failed; see $log)" >&2
         rm -f "$image"
     fi
+}
+
+run_external_root() {
+    local seed="$1"
+    local source="$2"
+    local source_profile="$3"
+    local features_csv="$4"
+
+    if [ -z "$source" ]; then
+        return 0
+    fi
+    if [ ! -d "$source" ]; then
+        echo "WARN: skipped $seed (source directory not found: $source)" >&2
+        return 0
+    fi
+
+    run_mkfs "$seed" "$source" "$source_profile" \
+        "best_effort" \
+        "$features_csv" \
+        "-b4096"
 }
 
 mkdir -p "$OUT_DIR"
@@ -365,6 +484,29 @@ fi
 rm -rf "$tmp"
 
 tmp="$(mktemp -d)"
+if make_xattr_combo_root "$tmp"; then
+    run_mkfs "xattr-combo-4k" "$tmp" "xattr_combo" \
+        "best_effort" \
+        "block_size:4096,compression:none,xattrs:user,xattrs:shared,xattrs:long_prefix,xattrs:name_filter,layout:plain,dir_size:small,feature_combo:xattr_all" \
+        "-b4096" "--xattr-prefix=user.matrix.combo.long." "-Exattr-name-filter"
+    if csv_has "lz4" "$COMPRESSIONS"; then
+        run_mkfs "xattr-combo-lz4-4k" "$tmp" "xattr_combo" \
+            "best_effort" \
+            "block_size:4096,compression:lz4,xattrs:user,xattrs:shared,xattrs:long_prefix,xattrs:name_filter,layout:plain,dir_size:small,feature_combo:xattr_all" \
+            "-b4096" "-zlz4" "--xattr-prefix=user.matrix.combo.long." \
+            "-Exattr-name-filter"
+        run_mkfs "xattr-combo-fragment-lz4-4k" "$tmp" "xattr_combo" \
+            "best_effort" \
+            "block_size:4096,compression:lz4,xattrs:user,xattrs:shared,xattrs:long_prefix,xattrs:name_filter,layout:fragment,packed_inode:true,feature_combo:xattr_all" \
+            "-b4096" "-zlz4" "--xattr-prefix=user.matrix.combo.long." \
+            "-Exattr-name-filter" "-Efragments"
+    fi
+else
+    echo "WARN: skipped xattr-combo seeds (setfattr unavailable or combo xattr failed)" >&2
+fi
+rm -rf "$tmp"
+
+tmp="$(mktemp -d)"
 if make_acl_root "$tmp"; then
     run_mkfs "acl-posix-4k" "$tmp" "acl_posix" \
         "best_effort" \
@@ -404,6 +546,37 @@ else
     echo "WARN: skipped device-node-4k (mknod unavailable or not permitted)" >&2
 fi
 rm -rf "$tmp"
+
+tmp="$(mktemp -d)"
+make_android_profile_root "$tmp"
+run_mkfs "android-profile-4k" "$tmp" "android_profile" \
+    "required" \
+    "block_size:4096,compression:none,layout:plain,dir_size:profile,workload:android,profile:generated" \
+    "-b4096"
+rm -rf "$tmp"
+
+tmp="$(mktemp -d)"
+make_container_profile_root "$tmp"
+run_mkfs "container-profile-4k" "$tmp" "container_profile" \
+    "required" \
+    "block_size:4096,compression:none,layout:plain,dir_size:profile,workload:container,profile:generated" \
+    "-b4096"
+rm -rf "$tmp"
+
+tmp="$(mktemp -d)"
+make_linux_rootfs_profile_root "$tmp"
+run_mkfs "rootfs-profile-4k" "$tmp" "rootfs_profile" \
+    "required" \
+    "block_size:4096,compression:none,layout:plain,dir_size:profile,workload:rootfs,profile:generated" \
+    "-b4096"
+rm -rf "$tmp"
+
+run_external_root "android-real-4k" "$ANDROID_ROOT" "android_real" \
+    "block_size:4096,compression:none,layout:plain,dir_size:real_world,workload:android,sample:real"
+run_external_root "container-real-4k" "$CONTAINER_ROOT" "container_real" \
+    "block_size:4096,compression:none,layout:plain,dir_size:real_world,workload:container,sample:real"
+run_external_root "rootfs-real-4k" "$ROOTFS_ROOT" "rootfs_real" \
+    "block_size:4096,compression:none,layout:plain,dir_size:real_world,workload:rootfs,sample:real"
 
 tmp="$(mktemp -d)"
 make_basic_root "$tmp"
