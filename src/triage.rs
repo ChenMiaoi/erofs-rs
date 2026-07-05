@@ -7,27 +7,35 @@ use std::fs;
 use std::path::Path;
 use thiserror::Error;
 
-const FUZZ_BUCKET_REPORT_SCHEMA: &str = "erofs-rs.fuzz-buckets.v1";
+pub const FUZZ_BUCKET_REPORT_SCHEMA: &str = "erofs-rs.fuzz-buckets.v1";
 pub const BUCKET_DATABASE_SCHEMA: &str = "erofs-rs.bucket-db.v1";
 
-#[derive(Clone, Debug, Deserialize)]
-struct FuzzBucketReport {
-    schema: String,
-    rng_seed: u64,
-    iterations: u64,
-    text_report_path: String,
-    buckets: Vec<FuzzBucket>,
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FuzzBucketReport {
+    pub schema: String,
+    pub tool: String,
+    pub tool_version: String,
+    pub rng_seed: u64,
+    pub duration_millis: u64,
+    pub iterations: u64,
+    pub unique_images: u64,
+    pub seed_count: u64,
+    pub actionable_findings: u64,
+    pub text_report_path: String,
+    pub buckets: Vec<FuzzBucket>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-struct FuzzBucket {
-    signature: String,
-    classification: String,
-    outcome_kind: String,
-    count: u64,
-    first_iteration: u64,
-    example_seed_name: String,
-    reason: String,
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FuzzBucket {
+    pub signature: String,
+    pub classification: String,
+    pub outcome_kind: String,
+    pub count: u64,
+    pub first_iteration: u64,
+    pub example_seed_name: String,
+    pub reason: String,
 }
 
 #[derive(Clone, Debug)]
@@ -99,6 +107,108 @@ pub enum BucketDatabaseError {
         expected: u64,
         actual: u64,
     },
+}
+
+#[derive(Debug, Error)]
+pub enum FuzzBucketReportError {
+    #[error("failed to decode fuzz bucket report: {0}")]
+    Decode(#[from] serde_json::Error),
+    #[error("unsupported fuzz bucket report schema: {0}")]
+    UnsupportedSchema(String),
+    #[error("fuzz bucket report field {0} is empty")]
+    EmptyField(&'static str),
+    #[error("fuzz bucket report bucket {0} has zero count")]
+    ZeroCount(String),
+    #[error("fuzz bucket report contains duplicate signature: {0}")]
+    DuplicateSignature(String),
+    #[error("fuzz bucket report count mismatch for {field}: expected {expected}, actual {actual}")]
+    CountMismatch {
+        field: &'static str,
+        expected: u64,
+        actual: u64,
+    },
+}
+
+pub fn parse_fuzz_bucket_report(
+    content: &str,
+) -> std::result::Result<FuzzBucketReport, FuzzBucketReportError> {
+    let report: FuzzBucketReport = serde_json::from_str(content)?;
+    validate_fuzz_bucket_report(&report)?;
+    Ok(report)
+}
+
+pub fn validate_fuzz_bucket_report(
+    report: &FuzzBucketReport,
+) -> std::result::Result<(), FuzzBucketReportError> {
+    if report.schema != FUZZ_BUCKET_REPORT_SCHEMA {
+        return Err(FuzzBucketReportError::UnsupportedSchema(
+            report.schema.clone(),
+        ));
+    }
+    require_bucket_report_nonempty("tool", &report.tool)?;
+    require_bucket_report_nonempty("tool_version", &report.tool_version)?;
+    require_bucket_report_nonempty("text_report_path", &report.text_report_path)?;
+
+    let mut signatures = HashSet::new();
+    let mut actionable_findings = 0u64;
+    for bucket in &report.buckets {
+        validate_fuzz_bucket(bucket)?;
+        if !signatures.insert(bucket.signature.as_str()) {
+            return Err(FuzzBucketReportError::DuplicateSignature(
+                bucket.signature.clone(),
+            ));
+        }
+        actionable_findings = actionable_findings.checked_add(bucket.count).ok_or(
+            FuzzBucketReportError::CountMismatch {
+                field: "actionable_findings",
+                expected: u64::MAX,
+                actual: report.actionable_findings,
+            },
+        )?;
+    }
+    require_bucket_report_count(
+        "actionable_findings",
+        actionable_findings,
+        report.actionable_findings,
+    )?;
+    Ok(())
+}
+
+fn validate_fuzz_bucket(bucket: &FuzzBucket) -> std::result::Result<(), FuzzBucketReportError> {
+    require_bucket_report_nonempty("buckets.signature", &bucket.signature)?;
+    require_bucket_report_nonempty("buckets.classification", &bucket.classification)?;
+    require_bucket_report_nonempty("buckets.outcome_kind", &bucket.outcome_kind)?;
+    require_bucket_report_nonempty("buckets.example_seed_name", &bucket.example_seed_name)?;
+    require_bucket_report_nonempty("buckets.reason", &bucket.reason)?;
+    if bucket.count == 0 {
+        return Err(FuzzBucketReportError::ZeroCount(bucket.signature.clone()));
+    }
+    Ok(())
+}
+
+fn require_bucket_report_nonempty(
+    field: &'static str,
+    value: &str,
+) -> std::result::Result<(), FuzzBucketReportError> {
+    if value.is_empty() {
+        return Err(FuzzBucketReportError::EmptyField(field));
+    }
+    Ok(())
+}
+
+fn require_bucket_report_count(
+    field: &'static str,
+    expected: u64,
+    actual: u64,
+) -> std::result::Result<(), FuzzBucketReportError> {
+    if expected != actual {
+        return Err(FuzzBucketReportError::CountMismatch {
+            field,
+            expected,
+            actual,
+        });
+    }
+    Ok(())
 }
 
 pub fn parse_bucket_database(
@@ -257,56 +367,20 @@ fn usize_to_u64_count(
     })
 }
 
-fn require_nonempty(path: &str, field: &'static str, value: &str) -> Result<()> {
-    if value.is_empty() {
-        bail!("empty {field} in bucket report {path}");
-    }
-    Ok(())
-}
-
 fn validate_report(input: &BucketReportInput) -> Result<()> {
-    if input.report.schema != FUZZ_BUCKET_REPORT_SCHEMA {
-        bail!(
-            "unsupported fuzz bucket report schema {} in {}",
-            input.report.schema,
-            input.path
-        );
-    }
-
-    let mut signatures = HashSet::new();
-    for bucket in &input.report.buckets {
-        require_nonempty(&input.path, "signature", &bucket.signature)?;
-        require_nonempty(&input.path, "classification", &bucket.classification)?;
-        require_nonempty(&input.path, "outcome_kind", &bucket.outcome_kind)?;
-        if bucket.count == 0 {
-            bail!(
-                "zero count for bucket signature {} in {}",
-                bucket.signature,
-                input.path
-            );
-        }
-        if !signatures.insert(bucket.signature.as_str()) {
-            bail!(
-                "duplicate bucket signature {} in {}",
-                bucket.signature,
-                input.path
-            );
-        }
-    }
-
-    Ok(())
+    validate_fuzz_bucket_report(&input.report)
+        .with_context(|| format!("invalid fuzz bucket report {}", input.path))
 }
 
 fn read_bucket_report(path: &Path) -> Result<BucketReportInput> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("failed to read bucket report {}", path.display()))?;
-    let report: FuzzBucketReport = serde_json::from_str(&content)
-        .with_context(|| format!("failed to decode bucket report {}", path.display()))?;
+    let report = parse_fuzz_bucket_report(&content)
+        .with_context(|| format!("failed to parse bucket report {}", path.display()))?;
     let input = BucketReportInput {
         path: path.display().to_string(),
         report,
     };
-    validate_report(&input)?;
     Ok(input)
 }
 
@@ -444,7 +518,8 @@ pub fn run(args: &TriageArgs) -> Result<()> {
 mod tests {
     use super::{
         BUCKET_DATABASE_SCHEMA, BucketDatabaseError, BucketReportInput, FuzzBucket,
-        FuzzBucketReport, build_bucket_database, parse_bucket_database, validate_bucket_database,
+        FuzzBucketReport, FuzzBucketReportError, build_bucket_database, parse_bucket_database,
+        parse_fuzz_bucket_report, validate_bucket_database, validate_fuzz_bucket_report,
     };
 
     fn bucket(signature: &str, classification: &str, count: u64) -> FuzzBucket {
@@ -462,13 +537,28 @@ mod tests {
     fn report(path: &str, rng_seed: u64, buckets: Vec<FuzzBucket>) -> BucketReportInput {
         BucketReportInput {
             path: path.to_string(),
-            report: FuzzBucketReport {
-                schema: "erofs-rs.fuzz-buckets.v1".to_string(),
-                rng_seed,
-                iterations: 10,
-                text_report_path: format!("{path}.txt"),
-                buckets,
-            },
+            report: fuzz_report(rng_seed, buckets, format!("{path}.txt")),
+        }
+    }
+
+    fn fuzz_report(
+        rng_seed: u64,
+        buckets: Vec<FuzzBucket>,
+        text_report_path: String,
+    ) -> FuzzBucketReport {
+        let actionable_findings = buckets.iter().map(|bucket| bucket.count).sum();
+        FuzzBucketReport {
+            schema: "erofs-rs.fuzz-buckets.v1".to_string(),
+            tool: "erofs-rs".to_string(),
+            tool_version: "0.1.0".to_string(),
+            rng_seed,
+            duration_millis: 100,
+            iterations: 10,
+            unique_images: 10,
+            seed_count: 1,
+            actionable_findings,
+            text_report_path,
+            buckets,
         }
     }
 
@@ -531,23 +621,92 @@ mod tests {
         );
         input.report.schema = "wrong".to_string();
 
-        let error = build_bucket_database(vec![input]).unwrap_err();
-        assert!(error.to_string().contains("unsupported fuzz bucket"));
+        let error = validate_fuzz_bucket_report(&input.report).unwrap_err();
+        assert!(matches!(error, FuzzBucketReportError::UnsupportedSchema(_)));
     }
 
     #[test]
     fn bucket_database_rejects_duplicate_signature_in_report() {
-        let error = build_bucket_database(vec![report(
+        let input = report(
             "campaign/fuzz-buckets.json",
             11,
             vec![
                 bucket("accepted_with_errors: shared", "accepted_with_errors", 1),
                 bucket("accepted_with_errors: shared", "accepted_with_errors", 2),
             ],
-        )])
-        .unwrap_err();
+        );
 
-        assert!(error.to_string().contains("duplicate bucket signature"));
+        let error = validate_fuzz_bucket_report(&input.report).unwrap_err();
+        assert!(matches!(
+            error,
+            FuzzBucketReportError::DuplicateSignature(signature)
+                if signature == "accepted_with_errors: shared"
+        ));
+    }
+
+    #[test]
+    fn fuzz_bucket_report_parser_accepts_generated_shape() {
+        let report = fuzz_report(
+            11,
+            vec![bucket(
+                "accepted_with_errors: shared",
+                "accepted_with_errors",
+                1,
+            )],
+            "fuzz-report.txt".to_string(),
+        );
+        let content = serde_json::to_string(&report).unwrap();
+
+        let parsed = parse_fuzz_bucket_report(&content).unwrap();
+
+        assert_eq!(parsed, report);
+    }
+
+    #[test]
+    fn fuzz_bucket_report_parser_rejects_unknown_fields() {
+        let content = r#"{
+  "schema": "erofs-rs.fuzz-buckets.v1",
+  "tool": "erofs-rs",
+  "tool_version": "0.1.0",
+  "rng_seed": 11,
+  "duration_millis": 100,
+  "iterations": 10,
+  "unique_images": 10,
+  "seed_count": 1,
+  "actionable_findings": 0,
+  "text_report_path": "fuzz-report.txt",
+  "buckets": [],
+  "extra": true
+}"#;
+
+        let error = parse_fuzz_bucket_report(content).unwrap_err();
+
+        assert!(matches!(error, FuzzBucketReportError::Decode(_)));
+    }
+
+    #[test]
+    fn fuzz_bucket_report_parser_rejects_actionable_count_mismatch() {
+        let mut report = fuzz_report(
+            11,
+            vec![bucket(
+                "accepted_with_errors: shared",
+                "accepted_with_errors",
+                1,
+            )],
+            "fuzz-report.txt".to_string(),
+        );
+        report.actionable_findings = 2;
+
+        let error = validate_fuzz_bucket_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            FuzzBucketReportError::CountMismatch {
+                field: "actionable_findings",
+                expected: 1,
+                actual: 2,
+            }
+        ));
     }
 
     #[test]
