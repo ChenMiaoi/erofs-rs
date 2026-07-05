@@ -787,6 +787,8 @@ fn json_report(
 }
 
 fn write_json_report(path: &str, report: &OracleJsonReport) -> Result<()> {
+    validate_oracle_json_report(report)
+        .map_err(|error| anyhow::anyhow!("generated oracle JSON report is invalid: {error}"))?;
     let json = serde_json::to_string_pretty(report)
         .map_err(|e| anyhow::anyhow!("failed to encode oracle JSON report: {e}"))?;
     fs::write(path, json + "\n")
