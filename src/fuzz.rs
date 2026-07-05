@@ -5,12 +5,59 @@ use crate::image::{EROFS_SUPER_OFFSET, FieldWidth, Image, read_image, write_imag
 use anyhow::{Result, bail};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+
+const FUZZ_ARTIFACT_SCHEMA: &str = "erofs-rs.fuzz-artifact.v1";
+const TOOL_NAME: &str = "erofs-rs";
+const TOOL_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct MutationRecord {
+    kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    field: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    offset: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    width: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bit: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    old: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    new: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct FuzzArtifactCommands {
+    fsck: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct FuzzArtifactSidecar {
+    schema: String,
+    tool: String,
+    tool_version: String,
+    rng_seed: u64,
+    iteration: u64,
+    strategy: String,
+    seed_name: String,
+    seed_sha256: String,
+    artifact_sha256: String,
+    artifact_path: String,
+    mutations: Vec<MutationRecord>,
+    commands: FuzzArtifactCommands,
+    classification: String,
+    reason: String,
+    stdout_path: String,
+    stderr_path: String,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OutcomeKind {
@@ -144,6 +191,39 @@ fn sha256_hex(image: &Image) -> String {
     hex::encode(hasher.finalize())
 }
 
+fn field_width_name(width: FieldWidth) -> &'static str {
+    match width {
+        FieldWidth::U8 => "u8",
+        FieldWidth::U16 => "u16",
+        FieldWidth::U32 => "u32",
+        FieldWidth::U64 => "u64",
+    }
+}
+
+fn format_field_value(value: u64, width: FieldWidth) -> String {
+    format!("0x{:0digits$X}", value, digits = width.bytes() * 2)
+}
+
+fn mutation_record(
+    kind: &str,
+    field: Option<&str>,
+    offset: Option<usize>,
+    width: Option<FieldWidth>,
+    bit: Option<u8>,
+    old: Option<String>,
+    new: Option<String>,
+) -> MutationRecord {
+    MutationRecord {
+        kind: kind.to_string(),
+        field: field.map(ToOwned::to_owned),
+        offset,
+        width: width.map(field_width_name).map(ToOwned::to_owned),
+        bit,
+        old,
+        new,
+    }
+}
+
 fn load_seeds(input_dir: &str) -> Result<Vec<(String, Image)>> {
     let mut seeds = Vec::new();
     let mut paths = Vec::new();
@@ -169,36 +249,68 @@ fn load_seeds(input_dir: &str) -> Result<Vec<(String, Image)>> {
     Ok(seeds)
 }
 
-fn random_bit_flip(image: &mut Image, rng: &mut StdRng) {
+fn random_bit_flip(image: &mut Image, rng: &mut StdRng) -> Option<MutationRecord> {
     if image.is_empty() {
-        return;
+        return None;
     }
     let idx = rng.gen_range(0..image.len());
     let bit = rng.gen_range(0..8);
-    image.as_bytes_mut()[idx] ^= 1 << bit;
+    let old = image.as_bytes()[idx];
+    let new = old ^ (1 << bit);
+    image.as_bytes_mut()[idx] = new;
+    Some(mutation_record(
+        "bit_flip",
+        None,
+        Some(idx),
+        Some(FieldWidth::U8),
+        Some(bit),
+        Some(format_field_value(old as u64, FieldWidth::U8)),
+        Some(format_field_value(new as u64, FieldWidth::U8)),
+    ))
 }
 
-fn random_byte_mutation(image: &mut Image, rng: &mut StdRng) {
+fn random_byte_mutation(image: &mut Image, rng: &mut StdRng) -> Option<MutationRecord> {
     if image.is_empty() {
-        return;
+        return None;
     }
     let idx = rng.gen_range(0..image.len());
-    image.as_bytes_mut()[idx] = rng.r#gen();
+    let old = image.as_bytes()[idx];
+    let new = rng.r#gen();
+    image.as_bytes_mut()[idx] = new;
+    Some(mutation_record(
+        "byte",
+        None,
+        Some(idx),
+        Some(FieldWidth::U8),
+        None,
+        Some(format_field_value(old as u64, FieldWidth::U8)),
+        Some(format_field_value(new as u64, FieldWidth::U8)),
+    ))
 }
 
-fn random_word_mutation(image: &mut Image, rng: &mut StdRng) {
+fn random_word_mutation(image: &mut Image, rng: &mut StdRng) -> Option<MutationRecord> {
     if image.len() < 8 {
-        return;
+        return None;
     }
     let idx = rng.gen_range(0..image.len() - 7);
+    let old = image.read_field(idx, FieldWidth::U64).ok()?;
     let value: u64 = rng.r#gen();
     let bytes = value.to_le_bytes();
     image.as_bytes_mut()[idx..idx + 8].copy_from_slice(&bytes);
+    Some(mutation_record(
+        "word",
+        None,
+        Some(idx),
+        Some(FieldWidth::U64),
+        None,
+        Some(format_field_value(old, FieldWidth::U64)),
+        Some(format_field_value(value, FieldWidth::U64)),
+    ))
 }
 
-fn random_arithmetic(image: &mut Image, rng: &mut StdRng) {
+fn random_arithmetic(image: &mut Image, rng: &mut StdRng) -> Option<MutationRecord> {
     if image.len() < 4 {
-        return;
+        return None;
     }
     let idx = rng.gen_range(0..image.len() - 3);
     let delta: i32 = rng.gen_range(-256..256);
@@ -210,27 +322,75 @@ fn random_arithmetic(image: &mut Image, rng: &mut StdRng) {
     ]);
     let new_value = (current as i64 + delta as i64) as u32;
     image.as_bytes_mut()[idx..idx + 4].copy_from_slice(&new_value.to_le_bytes());
+    Some(mutation_record(
+        "arithmetic",
+        None,
+        Some(idx),
+        Some(FieldWidth::U32),
+        None,
+        Some(format_field_value(current as u64, FieldWidth::U32)),
+        Some(format_field_value(new_value as u64, FieldWidth::U32)),
+    ))
 }
 
-fn random_superblock_field(image: &mut Image, rng: &mut StdRng) {
+fn random_superblock_field(image: &mut Image, rng: &mut StdRng) -> Option<MutationRecord> {
     // Mutate one of a few key superblock fields deterministically.
-    let fields: &[(usize, FieldWidth)] = &[
-        (EROFS_SUPER_OFFSET + 0x0E, FieldWidth::U16), // root_nid
-        (EROFS_SUPER_OFFSET + 0x0C, FieldWidth::U8),  // blkszbits
-        (EROFS_SUPER_OFFSET + 0x24, FieldWidth::U32), // blocks_lo
-        (EROFS_SUPER_OFFSET + 0x28, FieldWidth::U32), // meta_blkaddr
+    let fields: &[(&str, usize, FieldWidth)] = &[
+        (
+            "superblock.root_nid",
+            EROFS_SUPER_OFFSET + 0x0E,
+            FieldWidth::U16,
+        ),
+        (
+            "superblock.blkszbits",
+            EROFS_SUPER_OFFSET + 0x0C,
+            FieldWidth::U8,
+        ),
+        (
+            "superblock.blocks_lo",
+            EROFS_SUPER_OFFSET + 0x24,
+            FieldWidth::U32,
+        ),
+        (
+            "superblock.meta_blkaddr",
+            EROFS_SUPER_OFFSET + 0x28,
+            FieldWidth::U32,
+        ),
     ];
-    let (offset, width) = fields[rng.gen_range(0..fields.len())];
+    let (field, offset, width) = fields[rng.gen_range(0..fields.len())];
+    let old = image.read_field(offset, width).ok()?;
     let value: u64 = match width {
         FieldWidth::U8 => rng.r#gen::<u8>() as u64,
         FieldWidth::U16 => rng.r#gen::<u16>() as u64,
         FieldWidth::U32 => rng.r#gen::<u32>() as u64,
         FieldWidth::U64 => rng.r#gen::<u64>(),
     };
-    let _ = image.write_field(offset, width, value);
+    image.write_field(offset, width, value).ok()?;
+    Some(mutation_record(
+        "field",
+        Some(field),
+        Some(offset),
+        Some(width),
+        None,
+        Some(format_field_value(old, width)),
+        Some(format_field_value(value, width)),
+    ))
 }
 
-fn apply_random_mutation(image: &mut Image, rng: &mut StdRng) {
+fn checksum_fix_mutation(image: &mut Image) -> Option<MutationRecord> {
+    let (old, new) = fix_checksum(image).ok()?;
+    Some(mutation_record(
+        "fix_checksum",
+        Some("superblock.checksum"),
+        Some(EROFS_SUPER_OFFSET + 0x04),
+        Some(FieldWidth::U32),
+        None,
+        Some(format_field_value(old as u64, FieldWidth::U32)),
+        Some(format_field_value(new as u64, FieldWidth::U32)),
+    ))
+}
+
+fn apply_random_mutation(image: &mut Image, rng: &mut StdRng) -> Option<MutationRecord> {
     let choice = rng.gen_range(0..10);
     match choice {
         0..=2 => random_bit_flip(image, rng),
@@ -240,7 +400,7 @@ fn apply_random_mutation(image: &mut Image, rng: &mut StdRng) {
         8 => random_superblock_field(image, rng),
         _ => {
             // With some probability, fix checksum to reach deep parsing.
-            let _ = fix_checksum(image);
+            checksum_fix_mutation(image)
         }
     }
 }
@@ -259,6 +419,74 @@ fn save_artifact(
     let path = output_dir.join(&name);
     write_image(&path, image)?;
     Ok(path)
+}
+
+fn strategy_name(strategy: FuzzStrategy) -> &'static str {
+    match strategy {
+        FuzzStrategy::Mutation => "mutation",
+    }
+}
+
+fn artifact_text_path(artifact_path: &Path, stream: &str) -> PathBuf {
+    artifact_path.with_extension(format!("{stream}.txt"))
+}
+
+fn artifact_sidecar_path(artifact_path: &Path) -> PathBuf {
+    artifact_path.with_extension("json")
+}
+
+fn fsck_command(fsck_path: &str, artifact_path: &Path) -> Vec<String> {
+    vec![fsck_path.to_string(), artifact_path.display().to_string()]
+}
+
+struct FuzzSidecarInput<'a> {
+    args: &'a FuzzArgs,
+    rng_seed: u64,
+    iteration: u64,
+    seed_name: &'a str,
+    seed_sha256: &'a str,
+    artifact_sha256: &'a str,
+    artifact_path: &'a Path,
+    mutations: Vec<MutationRecord>,
+    classification: &'a str,
+    reason: &'a str,
+    stdout_path: &'a Path,
+    stderr_path: &'a Path,
+}
+
+fn build_fuzz_sidecar(input: FuzzSidecarInput<'_>) -> FuzzArtifactSidecar {
+    FuzzArtifactSidecar {
+        schema: FUZZ_ARTIFACT_SCHEMA.to_string(),
+        tool: TOOL_NAME.to_string(),
+        tool_version: TOOL_VERSION.to_string(),
+        rng_seed: input.rng_seed,
+        iteration: input.iteration,
+        strategy: strategy_name(input.args.strategy).to_string(),
+        seed_name: input.seed_name.to_string(),
+        seed_sha256: input.seed_sha256.to_string(),
+        artifact_sha256: input.artifact_sha256.to_string(),
+        artifact_path: input.artifact_path.display().to_string(),
+        mutations: input.mutations,
+        commands: FuzzArtifactCommands {
+            fsck: fsck_command(&input.args.fsck, input.artifact_path),
+        },
+        classification: input.classification.to_string(),
+        reason: input.reason.to_string(),
+        stdout_path: input.stdout_path.display().to_string(),
+        stderr_path: input.stderr_path.display().to_string(),
+    }
+}
+
+fn write_artifact_text(path: &Path, contents: &str) -> Result<()> {
+    fs::write(path, contents)
+        .map_err(|e| anyhow::anyhow!("failed to write artifact text {}: {e}", path.display()))
+}
+
+fn write_fuzz_sidecar(path: &Path, sidecar: &FuzzArtifactSidecar) -> Result<()> {
+    let json = serde_json::to_string_pretty(sidecar)
+        .map_err(|e| anyhow::anyhow!("failed to serialize fuzz sidecar: {e}"))?;
+    fs::write(path, json + "\n")
+        .map_err(|e| anyhow::anyhow!("failed to write fuzz sidecar {}: {e}", path.display()))
 }
 
 fn write_fuzz_report(summary: &FuzzSummary) -> Result<()> {
@@ -367,12 +595,16 @@ fn run_mutation_fuzz(args: &FuzzArgs) -> Result<()> {
     while start.elapsed() < max_duration {
         iteration += 1;
         let (seed_name, seed_image) = choose_seed(&seeds, &mut rng);
+        let seed_sha256 = sha256_hex(seed_image);
         let mut mutated = seed_image.clone();
 
         // Apply 1-5 random mutations.
         let mutation_count = rng.gen_range(1..=5);
+        let mut mutations = Vec::with_capacity(mutation_count);
         for _ in 0..mutation_count {
-            apply_random_mutation(&mut mutated, &mut rng);
+            if let Some(mutation) = apply_random_mutation(&mut mutated, &mut rng) {
+                mutations.push(mutation);
+            }
         }
 
         let hash = sha256_hex(&mutated);
@@ -385,6 +617,27 @@ fn run_mutation_fuzz(args: &FuzzArgs) -> Result<()> {
         let result = run_fsck(&args.fsck, &artifact_path, &[])?;
         let (classification, reason) =
             classify_fsck_result(result.exit_code, &result.stderr, &result.stdout);
+
+        let stdout_path = artifact_text_path(&artifact_path, "stdout");
+        let stderr_path = artifact_text_path(&artifact_path, "stderr");
+        write_artifact_text(&stdout_path, &result.stdout)?;
+        write_artifact_text(&stderr_path, &result.stderr)?;
+        let sidecar_path = artifact_sidecar_path(&artifact_path);
+        let sidecar = build_fuzz_sidecar(FuzzSidecarInput {
+            args,
+            rng_seed,
+            iteration,
+            seed_name,
+            seed_sha256: &seed_sha256,
+            artifact_sha256: &hash,
+            artifact_path: &artifact_path,
+            mutations,
+            classification,
+            reason,
+            stdout_path: &stdout_path,
+            stderr_path: &stderr_path,
+        });
+        write_fuzz_sidecar(&sidecar_path, &sidecar)?;
 
         runs.push(FuzzRun {
             iteration,
@@ -434,8 +687,13 @@ fn run_mutation_fuzz(args: &FuzzArgs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{FuzzRun, FuzzSummary, OutcomeKind, sha256_hex};
-    use crate::image::Image;
+    use super::{
+        FUZZ_ARTIFACT_SCHEMA, FuzzArtifactSidecar, FuzzRun, FuzzSidecarInput, FuzzSummary,
+        OutcomeKind, build_fuzz_sidecar, mutation_record, sha256_hex,
+    };
+    use crate::cli::{FuzzArgs, FuzzStrategy};
+    use crate::image::{FieldWidth, Image};
+    use std::path::Path;
     use std::time::Duration;
 
     fn run(classification: &str) -> FuzzRun {
@@ -466,6 +724,53 @@ mod tests {
             sha256_hex(&image),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    #[test]
+    fn fuzz_sidecar_round_trips_json() {
+        let args = FuzzArgs {
+            input_dir: "seeds".to_string(),
+            output_dir: "out".to_string(),
+            max_time: 1,
+            fsck: "fsck.erofs".to_string(),
+            seed: Some(123),
+            no_tui: true,
+            strategy: FuzzStrategy::Mutation,
+        };
+        let artifact_path = Path::new("out/fuzz_seed_iter1.erofs");
+        let stdout_path = Path::new("out/fuzz_seed_iter1.stdout.txt");
+        let stderr_path = Path::new("out/fuzz_seed_iter1.stderr.txt");
+        let mutations = vec![mutation_record(
+            "byte",
+            None,
+            Some(7),
+            Some(FieldWidth::U8),
+            None,
+            Some("0x00".to_string()),
+            Some("0xFF".to_string()),
+        )];
+
+        let sidecar = build_fuzz_sidecar(FuzzSidecarInput {
+            args: &args,
+            rng_seed: 123,
+            iteration: 1,
+            seed_name: "seed",
+            seed_sha256: "seedhash",
+            artifact_sha256: "artifacthash",
+            artifact_path,
+            mutations,
+            classification: "rejected_invalid",
+            reason: "fsck rejected as invalid",
+            stdout_path,
+            stderr_path,
+        });
+        let json = serde_json::to_string(&sidecar).unwrap();
+        let decoded: FuzzArtifactSidecar = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(decoded, sidecar);
+        assert_eq!(decoded.schema, FUZZ_ARTIFACT_SCHEMA);
+        assert_eq!(decoded.strategy, "mutation");
+        assert_eq!(decoded.mutations[0].old.as_deref(), Some("0x00"));
     }
 
     #[test]
