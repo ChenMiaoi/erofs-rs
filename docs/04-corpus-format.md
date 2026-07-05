@@ -83,7 +83,9 @@ copy into the long-lived seed corpus.
 
 The Rust library parser rejects unknown coverage-manifest schemas, malformed
 SHA-256 digests, empty required paths, and inconsistent global or per-target
-counts before callers use the report for seed import decisions.
+counts before callers use the report for seed import decisions. It also rejects
+duplicate collected unit hashes, copied paths, and recommended import paths so
+one minimized unit cannot be represented twice in a review manifest.
 
 When collecting a cargo-fuzz tree, coverage mode reads `<target>/corpus/`
 entries and skips `<target>/artifacts/` so crash artifacts stay in triage

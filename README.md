@@ -161,7 +161,7 @@ output can be reviewed and imported without losing provenance. Coverage mode
 skips cargo-fuzz `<target>/artifacts/` directories so crash artifacts do not get
 mixed into the minimized seed import path. The Rust library parser rejects
 unknown coverage-manifest schemas, malformed SHA-256 digests, empty required
-paths, and inconsistent global or per-target counts.
+paths, duplicate collected units, and inconsistent global or per-target counts.
 Reports also include lifecycle buckets such as `queue/userspace`,
 `rejects/checksum`, `crashes/userspace`, and `timeouts/userspace` so long-running
 campaigns can separate expected rejects from actionable triage queues without

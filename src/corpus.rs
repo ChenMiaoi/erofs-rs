@@ -103,6 +103,10 @@ pub enum CoverageManifestError {
     InvalidSha256 { field: &'static str, sha256: String },
     #[error("coverage manifest contains duplicate target summary: {0}")]
     DuplicateTarget(String),
+    #[error("coverage manifest contains duplicate unit SHA-256 digest: {0}")]
+    DuplicateUnitSha256(String),
+    #[error("coverage manifest contains duplicate unit {field}: {path}")]
+    DuplicateUnitPath { field: &'static str, path: String },
     #[error("coverage manifest unit target has no summary: {0}")]
     MissingTargetSummary(String),
     #[error("coverage manifest count mismatch for {field}: expected {expected}, actual {actual}")]
@@ -166,8 +170,28 @@ pub fn validate_coverage_manifest(
 
     let mut units_by_target: HashMap<&str, usize> = HashMap::new();
     let mut hashes_by_target: HashMap<&str, HashSet<&str>> = HashMap::new();
+    let mut unit_hashes = HashSet::new();
+    let mut copied_paths = HashSet::new();
+    let mut recommended_import_paths = HashSet::new();
     for unit in &manifest.units {
         validate_coverage_unit(unit)?;
+        if !unit_hashes.insert(unit.sha256.as_str()) {
+            return Err(CoverageManifestError::DuplicateUnitSha256(
+                unit.sha256.clone(),
+            ));
+        }
+        if !copied_paths.insert(unit.copied_path.as_str()) {
+            return Err(CoverageManifestError::DuplicateUnitPath {
+                field: "copied_path",
+                path: unit.copied_path.clone(),
+            });
+        }
+        if !recommended_import_paths.insert(unit.recommended_import_path.as_str()) {
+            return Err(CoverageManifestError::DuplicateUnitPath {
+                field: "recommended_import_path",
+                path: unit.recommended_import_path.clone(),
+            });
+        }
         *units_by_target.entry(unit.target.as_str()).or_insert(0) += 1;
         hashes_by_target
             .entry(unit.target.as_str())
@@ -1254,6 +1278,51 @@ mod tests {
         assert!(matches!(
             error,
             CoverageManifestError::DuplicateTarget(target) if target == "superblock_parse"
+        ));
+    }
+
+    #[test]
+    fn coverage_manifest_rejects_duplicate_unit_hash() {
+        let mut report: serde_json::Value = serde_json::from_str(VALID_COVERAGE_MANIFEST).unwrap();
+        report["collected_units"] = serde_json::json!(2);
+        report["targets"][0]["collected_units"] = serde_json::json!(2);
+        let unit = report["units"][0].clone();
+        report["units"].as_array_mut().unwrap().push(unit);
+        let report = serde_json::to_string(&report).unwrap();
+
+        let error = parse_coverage_manifest(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            CoverageManifestError::DuplicateUnitSha256(sha)
+                if sha == "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        ));
+    }
+
+    #[test]
+    fn coverage_manifest_rejects_duplicate_unit_path() {
+        let mut report: serde_json::Value = serde_json::from_str(VALID_COVERAGE_MANIFEST).unwrap();
+        report["total_input_units"] = serde_json::json!(2);
+        report["collected_units"] = serde_json::json!(2);
+        report["unique_hashes"] = serde_json::json!(2);
+        report["duplicates_removed"] = serde_json::json!(0);
+        report["targets"][0]["collected_units"] = serde_json::json!(2);
+        report["targets"][0]["unique_hashes"] = serde_json::json!(2);
+        report["targets"][0]["duplicates_removed"] = serde_json::json!(0);
+        let mut unit = report["units"][0].clone();
+        unit["sha256"] =
+            serde_json::json!("1111111111111111111111111111111111111111111111111111111111111111");
+        report["units"].as_array_mut().unwrap().push(unit);
+        let report = serde_json::to_string(&report).unwrap();
+
+        let error = parse_coverage_manifest(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            CoverageManifestError::DuplicateUnitPath {
+                field: "copied_path",
+                path,
+            } if path == "coverage-interesting/unit-a"
         ));
     }
 
