@@ -159,7 +159,9 @@ iteration, strategy, seed and artifact SHA-256 digests, mutation records, fsck
 command, git revisions when available, classification, exit status, timeout
 state, and output truncation flags. `--exec-timeout` controls the per-artifact
 fsck timeout, and `--max-output-bytes` caps the retained bytes for each fsck
-output stream.
+output stream. On Unix, timed-out fsck executions run in a dedicated process
+group and the whole group is killed by default; use `--no-kill-process-group`
+only when debugging process lifetime issues manually.
 
 When stdout is an interactive terminal, `fuzz` opens a post-run TUI dashboard
 with the RNG seed, campaign totals, actionable finding count, classification

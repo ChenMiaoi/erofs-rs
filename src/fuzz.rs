@@ -64,6 +64,8 @@ struct FuzzArtifactSidecar {
     versions: FuzzArtifactVersions,
     fsck_exit_code: i32,
     fsck_timed_out: bool,
+    fsck_kill_process_group: bool,
+    fsck_killed_process_group: bool,
     stdout_truncated: bool,
     stderr_truncated: bool,
     classification: String,
@@ -486,6 +488,8 @@ struct FuzzSidecarInput<'a> {
     mutations: Vec<MutationRecord>,
     fsck_exit_code: i32,
     fsck_timed_out: bool,
+    fsck_kill_process_group: bool,
+    fsck_killed_process_group: bool,
     stdout_truncated: bool,
     stderr_truncated: bool,
     classification: &'a str,
@@ -513,6 +517,8 @@ fn build_fuzz_sidecar(input: FuzzSidecarInput<'_>) -> FuzzArtifactSidecar {
         versions: collect_versions(),
         fsck_exit_code: input.fsck_exit_code,
         fsck_timed_out: input.fsck_timed_out,
+        fsck_kill_process_group: input.fsck_kill_process_group,
+        fsck_killed_process_group: input.fsck_killed_process_group,
         stdout_truncated: input.stdout_truncated,
         stderr_truncated: input.stderr_truncated,
         classification: input.classification.to_string(),
@@ -635,6 +641,7 @@ fn run_mutation_fuzz(args: &FuzzArgs) -> Result<()> {
     let fsck_limits = ExecLimits {
         timeout: Duration::from_secs(args.exec_timeout),
         max_output_bytes: args.max_output_bytes,
+        kill_process_group: !args.no_kill_process_group,
     };
 
     let mut seen_hashes = HashSet::new();
@@ -683,6 +690,8 @@ fn run_mutation_fuzz(args: &FuzzArgs) -> Result<()> {
             mutations,
             fsck_exit_code: result.exit_code,
             fsck_timed_out: result.timed_out,
+            fsck_kill_process_group: fsck_limits.kill_process_group,
+            fsck_killed_process_group: result.killed_process_group,
             stdout_truncated: result.stdout_truncated,
             stderr_truncated: result.stderr_truncated,
             classification: &classification,
@@ -791,6 +800,7 @@ mod tests {
             strategy: FuzzStrategy::Mutation,
             exec_timeout: 30,
             max_output_bytes: 1024,
+            no_kill_process_group: false,
         };
         let artifact_path = Path::new("out/fuzz_seed_iter1.erofs");
         let stdout_path = Path::new("out/fuzz_seed_iter1.stdout.txt");
@@ -816,6 +826,8 @@ mod tests {
             mutations,
             fsck_exit_code: 1,
             fsck_timed_out: false,
+            fsck_kill_process_group: true,
+            fsck_killed_process_group: false,
             stdout_truncated: false,
             stderr_truncated: true,
             classification: "rejected_invalid",
@@ -830,6 +842,8 @@ mod tests {
         assert_eq!(decoded.schema, FUZZ_ARTIFACT_SCHEMA);
         assert_eq!(decoded.strategy, "mutation");
         assert_eq!(decoded.fsck_exit_code, 1);
+        assert!(decoded.fsck_kill_process_group);
+        assert!(!decoded.fsck_killed_process_group);
         assert!(decoded.stderr_truncated);
         assert_eq!(decoded.mutations[0].old.as_deref(), Some("0x00"));
     }

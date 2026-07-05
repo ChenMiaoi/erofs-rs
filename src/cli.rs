@@ -121,6 +121,11 @@ pub struct FuzzArgs {
         help = "Maximum bytes retained from each fsck output stream"
     )]
     pub max_output_bytes: usize,
+    #[arg(
+        long,
+        help = "Do not kill the fsck process group when an execution times out"
+    )]
+    pub no_kill_process_group: bool,
 }
 
 #[derive(Parser, Debug)]

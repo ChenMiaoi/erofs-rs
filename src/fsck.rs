@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::tempfile;
@@ -15,6 +15,7 @@ const DEFAULT_MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 pub struct ExecLimits {
     pub timeout: Duration,
     pub max_output_bytes: usize,
+    pub kill_process_group: bool,
 }
 
 impl Default for ExecLimits {
@@ -22,6 +23,7 @@ impl Default for ExecLimits {
         Self {
             timeout: Duration::from_secs(DEFAULT_FSCK_TIMEOUT_SECS),
             max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
+            kill_process_group: true,
         }
     }
 }
@@ -32,6 +34,7 @@ pub struct FsckResult {
     pub exit_code: i32,
     pub signal: Option<i32>,
     pub timed_out: bool,
+    pub killed_process_group: bool,
     pub stdout: String,
     pub stderr: String,
     pub stdout_truncated: bool,
@@ -88,6 +91,7 @@ pub fn run_fsck_with_limits<A: AsRef<Path>, B: AsRef<Path>>(
         .arg(image_path.as_ref())
         .stdout(Stdio::from(child_stdout))
         .stderr(Stdio::from(child_stderr));
+    configure_process_group(&mut cmd, limits.kill_process_group);
 
     let mut child = cmd.spawn().with_context(|| {
         format!(
@@ -98,6 +102,7 @@ pub fn run_fsck_with_limits<A: AsRef<Path>, B: AsRef<Path>>(
 
     let start = Instant::now();
     let mut timed_out = false;
+    let mut killed_process_group = false;
     loop {
         if child
             .try_wait()
@@ -113,7 +118,7 @@ pub fn run_fsck_with_limits<A: AsRef<Path>, B: AsRef<Path>>(
         }
         if start.elapsed() >= limits.timeout {
             timed_out = true;
-            let _ = child.kill();
+            killed_process_group = kill_timed_out_child(&mut child, limits.kill_process_group);
             break;
         }
         thread::sleep(Duration::from_millis(20));
@@ -158,6 +163,7 @@ pub fn run_fsck_with_limits<A: AsRef<Path>, B: AsRef<Path>>(
         exit_code,
         signal,
         timed_out,
+        killed_process_group,
         stdout,
         stderr,
         stdout_truncated,
@@ -215,6 +221,44 @@ fn exit_signal(status: &ExitStatus) -> Option<i32> {
 #[cfg(not(unix))]
 fn exit_signal(_status: &ExitStatus) -> Option<i32> {
     None
+}
+
+#[cfg(unix)]
+fn configure_process_group(cmd: &mut Command, enabled: bool) {
+    if enabled {
+        use std::os::unix::process::CommandExt;
+
+        cmd.process_group(0);
+    }
+}
+
+#[cfg(not(unix))]
+fn configure_process_group(_cmd: &mut Command, _enabled: bool) {}
+
+#[cfg(unix)]
+fn kill_timed_out_child(child: &mut Child, kill_process_group: bool) -> bool {
+    if !kill_process_group {
+        let _ = child.kill();
+        return false;
+    }
+
+    let Ok(process_group) = libc::pid_t::try_from(child.id()) else {
+        let _ = child.kill();
+        return false;
+    };
+    // The child was spawned with process_group(0), so its pid is also the
+    // process-group id. Kill the whole group to avoid orphaned descendants.
+    let killed_group = unsafe { libc::killpg(process_group, libc::SIGKILL) == 0 };
+    if !killed_group {
+        let _ = child.kill();
+    }
+    killed_group
+}
+
+#[cfg(not(unix))]
+fn kill_timed_out_child(child: &mut Child, _kill_process_group: bool) -> bool {
+    let _ = child.kill();
+    false
 }
 
 /// Classify fsck.erofs output into consistent categories.

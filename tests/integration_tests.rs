@@ -6,7 +6,6 @@ use erofs_rs::{
     inode::locate_inodes,
 };
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -131,15 +130,13 @@ fn test_write_field_rejects_truncating_value() {
 fn test_fsck_timeout_classified() {
     let tmp = TempDir::new().unwrap();
     let script = tmp.path().join("slow-fsck.sh");
-    fs::write(&script, "#!/bin/sh\nsleep 2\n").unwrap();
-    let mut perms = fs::metadata(&script).unwrap().permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&script, perms).unwrap();
+    fs::write(&script, "sleep 2\n").unwrap();
 
+    let extra_args = vec![script.to_string_lossy().to_string()];
     let result = run_fsck_with_timeout(
-        &script,
+        "/bin/sh",
         fixture("single.erofs"),
-        &[],
+        &extra_args,
         Duration::from_millis(50),
     )
     .unwrap();
@@ -153,25 +150,23 @@ fn test_fsck_output_is_capped() {
     let script = tmp.path().join("noisy-fsck.sh");
     fs::write(
         &script,
-        "#!/bin/sh\n\
-         i=0\n\
+        "i=0\n\
          while [ \"$i\" -lt 200 ]; do printf x; i=$((i + 1)); done\n\
          i=0\n\
          while [ \"$i\" -lt 200 ]; do printf y >&2; i=$((i + 1)); done\n\
          exit 1\n",
     )
     .unwrap();
-    let mut perms = fs::metadata(&script).unwrap().permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&script, perms).unwrap();
 
+    let extra_args = vec![script.to_string_lossy().to_string()];
     let result = run_fsck_with_limits(
-        &script,
+        "/bin/sh",
         fixture("single.erofs"),
-        &[],
+        &extra_args,
         ExecLimits {
             timeout: Duration::from_secs(1),
             max_output_bytes: 32,
+            ..ExecLimits::default()
         },
     )
     .unwrap();
@@ -180,6 +175,61 @@ fn test_fsck_output_is_capped() {
     assert!(result.stderr_truncated);
     assert!(result.stdout.contains("truncated to 32 bytes"));
     assert!(result.stderr.contains("truncated to 32 bytes"));
+}
+
+#[cfg(unix)]
+#[test]
+fn test_fsck_timeout_kills_process_group() {
+    let tmp = TempDir::new().unwrap();
+    let script = tmp.path().join("spawns-child-fsck.sh");
+    let pid_file = tmp.path().join("child.pid");
+    fs::write(
+        &script,
+        "sleep 30 &\n\
+         echo $! > \"$1\"\n\
+         sleep 30\n",
+    )
+    .unwrap();
+
+    let extra_args = vec![
+        script.to_string_lossy().to_string(),
+        pid_file.to_string_lossy().to_string(),
+    ];
+    let result = run_fsck_with_limits(
+        "/bin/sh",
+        fixture("single.erofs"),
+        &extra_args,
+        ExecLimits {
+            timeout: Duration::from_millis(200),
+            max_output_bytes: 1024,
+            kill_process_group: true,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.classification, "rejected_timeout");
+    assert!(result.timed_out);
+    assert!(result.killed_process_group);
+
+    let child_pid = fs::read_to_string(&pid_file).unwrap().trim().to_string();
+    for _ in 0..20 {
+        let status = std::process::Command::new("kill")
+            .arg("-0")
+            .arg(&child_pid)
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        if !status.success() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let _ = std::process::Command::new("kill")
+        .arg("-9")
+        .arg(&child_pid)
+        .status();
+    panic!("fsck child process {child_pid} survived process-group timeout kill");
 }
 
 #[test]
