@@ -1,5 +1,5 @@
 use crate::checksum::fix_checksum;
-use crate::cli::FuzzArgs;
+use crate::cli::{FuzzArgs, FuzzStrategy};
 use crate::fsck::{classify_fsck_result, run_fsck};
 use crate::image::{EROFS_SUPER_OFFSET, FieldWidth, Image, read_image, write_image};
 use anyhow::{Result, bail};
@@ -222,6 +222,12 @@ fn should_show_tui(args: &FuzzArgs) -> bool {
 }
 
 pub fn run(args: &FuzzArgs) -> Result<()> {
+    match args.strategy {
+        FuzzStrategy::Mutation => run_mutation_fuzz(args),
+    }
+}
+
+fn run_mutation_fuzz(args: &FuzzArgs) -> Result<()> {
     if !Path::new(&args.input_dir).exists() {
         bail!("Input directory not found: {}", args.input_dir);
     }

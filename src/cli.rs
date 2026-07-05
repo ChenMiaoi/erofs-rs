@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 /// erofs-rs: Advanced EROFS fuzzing and image injection tool.
 #[derive(Parser, Debug)]
@@ -78,6 +78,12 @@ pub struct CorpusArgs {
     pub report: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum FuzzStrategy {
+    /// Random mutation of seed EROFS images.
+    Mutation,
+}
+
 #[derive(Parser, Debug)]
 pub struct FuzzArgs {
     #[arg(long, help = "Directory with seed images")]
@@ -96,8 +102,13 @@ pub struct FuzzArgs {
     pub seed: Option<u64>,
     #[arg(long, help = "Do not show the post-run terminal dashboard")]
     pub no_tui: bool,
-    #[arg(long, default_value = "mutation", help = "Fuzzing strategy: mutation")]
-    pub strategy: String,
+    #[arg(
+        long,
+        value_enum,
+        default_value = "mutation",
+        help = "Fuzzing strategy"
+    )]
+    pub strategy: FuzzStrategy,
 }
 
 #[derive(Parser, Debug)]
