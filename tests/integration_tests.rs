@@ -144,6 +144,28 @@ fn test_tolerant_parse_reports_valid_fixture_offsets() {
 }
 
 #[test]
+fn test_tolerant_parse_records_invalid_dirent_file_type() {
+    let mut img = read_image(fixture("single.erofs")).unwrap();
+    let report = parse_image(&img, ParseMode::FuzzTolerant).unwrap();
+    let dirent_offset = report
+        .dirents
+        .iter()
+        .find_map(|entry| entry.as_ref().ok().map(|dirent| dirent.offset))
+        .unwrap();
+
+    img.write_field(dirent_offset + 0x0A, FieldWidth::U8, 0xFF)
+        .unwrap();
+    let report = parse_image(&img, ParseMode::FuzzTolerant).unwrap();
+
+    assert!(report.offsets_seen.contains(&dirent_offset));
+    assert!(report.errors.iter().any(|error| {
+        error.stage == ParseStage::Dirent
+            && error.offset == Some(dirent_offset)
+            && error.reason.contains("invalid dirent file_type")
+    }));
+}
+
+#[test]
 fn test_read_field_rejects_offset_overflow() {
     let img = Image::new(vec![0; 8]);
     let err = img

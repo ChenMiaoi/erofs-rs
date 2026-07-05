@@ -1,6 +1,6 @@
 use crate::dirent::{Dirent, locate_dirents_in_image};
 use crate::image::{EROFS_SUPER_OFFSET, Image, Superblock};
-use crate::inode::{Inode, locate_inodes};
+use crate::inode::{Inode, inode_data_offset, inode_file_size, is_directory_inode, locate_inodes};
 use anyhow::{Context, Result};
 use std::collections::BTreeSet;
 use std::fmt;
@@ -104,23 +104,181 @@ pub fn parse_image(image: &Image, mode: ParseMode) -> Result<ParseReport> {
         .iter()
         .filter_map(|entry| entry.as_ref().ok().cloned())
         .collect();
-    let dirents = match locate_dirents_in_image(image, &superblock, &parsed_inodes) {
-        Ok(dirents) => dirents,
-        Err(error) => {
-            if mode == ParseMode::Strict {
+    if mode == ParseMode::FuzzTolerant {
+        report.dirents = locate_dirents_tolerant(image, &superblock, &parsed_inodes);
+        for entry in &report.dirents {
+            match entry {
+                Ok(dirent) => {
+                    report.offsets_seen.insert(dirent.offset);
+                }
+                Err(error) => {
+                    if let Some(offset) = error.offset {
+                        report.offsets_seen.insert(offset);
+                    }
+                    report.errors.push(error.clone());
+                }
+            }
+        }
+    } else {
+        let dirents = match locate_dirents_in_image(image, &superblock, &parsed_inodes) {
+            Ok(dirents) => dirents,
+            Err(error) => {
                 return Err(error).context("strict dirent location failed");
             }
-            let parse_error = ParseError::new(ParseStage::Dirent, None, error);
-            report.dirents.push(Err(parse_error.clone()));
-            report.errors.push(parse_error);
-            Vec::new()
-        }
-    };
+        };
 
-    for dirent in dirents {
-        report.offsets_seen.insert(dirent.offset);
-        report.dirents.push(Ok(dirent));
+        for dirent in dirents {
+            report.offsets_seen.insert(dirent.offset);
+            report.dirents.push(Ok(dirent));
+        }
     }
 
     Ok(report)
+}
+
+fn locate_dirents_tolerant(
+    image: &Image,
+    sb: &Superblock,
+    inodes: &[Inode],
+) -> Vec<std::result::Result<Dirent, ParseError>> {
+    let mut dirents = Vec::new();
+
+    for inode in inodes {
+        match is_directory_inode(image, inode.offset) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(error) => {
+                dirents.push(Err(ParseError::new(
+                    ParseStage::Dirent,
+                    Some(inode.offset),
+                    format!("failed to classify directory inode: {error}"),
+                )));
+                continue;
+            }
+        }
+
+        let data_start = match inode_data_offset(image, sb, inode.offset) {
+            Ok(offset) => offset,
+            Err(error) => {
+                dirents.push(Err(ParseError::new(
+                    ParseStage::Dirent,
+                    Some(inode.offset),
+                    format!("failed to locate directory data: {error}"),
+                )));
+                continue;
+            }
+        };
+        let data = image.as_bytes();
+        if data_start
+            .checked_add(12)
+            .is_none_or(|end| end > data.len())
+        {
+            dirents.push(Err(ParseError::new(
+                ParseStage::Dirent,
+                Some(data_start),
+                "directory data header out of bounds",
+            )));
+            continue;
+        }
+
+        let i_size = match inode_file_size(image, inode.offset) {
+            Ok(size) => size,
+            Err(error) => {
+                dirents.push(Err(ParseError::new(
+                    ParseStage::Dirent,
+                    Some(inode.offset),
+                    format!("failed to read directory size: {error}"),
+                )));
+                continue;
+            }
+        };
+        let available = data.len().saturating_sub(data_start);
+        let dir_len = usize::try_from(i_size).unwrap_or(usize::MAX).min(available);
+        let block_size = sb.block_size as usize;
+
+        let mut entry_idx = 0u32;
+        let mut block_rel = 0usize;
+        while block_rel < dir_len {
+            let block_start = match data_start.checked_add(block_rel) {
+                Some(offset) => offset,
+                None => {
+                    dirents.push(Err(ParseError::new(
+                        ParseStage::Dirent,
+                        Some(data_start),
+                        "directory block offset overflows",
+                    )));
+                    break;
+                }
+            };
+            let maxsize = (dir_len - block_rel).min(block_size);
+            if maxsize < 12
+                || block_start
+                    .checked_add(12)
+                    .is_none_or(|end| end > data.len())
+            {
+                dirents.push(Err(ParseError::new(
+                    ParseStage::Dirent,
+                    Some(block_start),
+                    "directory block too small for dirent header",
+                )));
+                break;
+            }
+
+            let nameoff =
+                u16::from_le_bytes([data[block_start + 8], data[block_start + 9]]) as usize;
+            if nameoff == 0 || nameoff >= block_size || nameoff % 12 != 0 || nameoff > maxsize {
+                dirents.push(Err(ParseError::new(
+                    ParseStage::Dirent,
+                    Some(block_start + 8),
+                    format!(
+                        "invalid dirent nameoff {nameoff} (block_size={block_size}, maxsize={maxsize})"
+                    ),
+                )));
+                block_rel = match block_rel.checked_add(block_size) {
+                    Some(next) => next,
+                    None => break,
+                };
+                continue;
+            }
+
+            let Some(headers_end) = block_start.checked_add(nameoff) else {
+                dirents.push(Err(ParseError::new(
+                    ParseStage::Dirent,
+                    Some(block_start),
+                    "dirent header end overflows",
+                )));
+                break;
+            };
+            let mut offset = block_start;
+            while offset
+                .checked_add(12)
+                .is_some_and(|end| end <= headers_end && end <= data.len())
+            {
+                let file_type = data[offset + 10];
+                if file_type > 7 {
+                    dirents.push(Err(ParseError::new(
+                        ParseStage::Dirent,
+                        Some(offset),
+                        format!("invalid dirent file_type {file_type}"),
+                    )));
+                } else {
+                    dirents.push(Ok(Dirent {
+                        offset,
+                        parent_nid: inode.nid,
+                        entry_idx,
+                        desc: format!("{}_entry{entry_idx}", inode.desc),
+                    }));
+                }
+                offset += 12;
+                entry_idx += 1;
+            }
+
+            let Some(next_block) = block_rel.checked_add(block_size) else {
+                break;
+            };
+            block_rel = next_block;
+        }
+    }
+
+    dirents
 }
