@@ -210,6 +210,8 @@ jobs:
           }
           Path(output).write_text(json.dumps(summary, indent=2) + "\n")
           PY
+          ./target/release/erofs-rs kernel-summary \
+            --summary kernel-replay/summary.json
 
           {
             cat kernel-replay/summary.txt

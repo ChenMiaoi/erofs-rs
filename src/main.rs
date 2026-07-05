@@ -20,6 +20,7 @@ fn main() -> Result<()> {
         Commands::Triage(args) => triage::run(args),
         Commands::Oracle(args) => oracle::run(args),
         Commands::KernelReport(args) => kernel_replay::run(args),
+        Commands::KernelSummary(args) => kernel_replay::run_summary(args),
         Commands::SeedManifest(args) => seed_manifest::run(args),
         Commands::Info(args) => info::run(args),
     }

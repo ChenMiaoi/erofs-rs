@@ -1,4 +1,4 @@
-use crate::cli::KernelReportArgs;
+use crate::cli::{KernelReportArgs, KernelSummaryArgs};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -377,6 +377,19 @@ pub fn run(args: &KernelReportArgs) -> Result<()> {
     Ok(())
 }
 
+pub fn run_summary(args: &KernelSummaryArgs) -> Result<()> {
+    let content = fs::read_to_string(&args.summary)
+        .with_context(|| format!("failed to read kernel replay summary {}", args.summary))?;
+    let summary = parse_kernel_replay_summary(&content)
+        .with_context(|| format!("failed to validate kernel replay summary {}", args.summary))?;
+
+    println!(
+        "Kernel replay summary OK: {} candidate(s), {} failure(s)",
+        summary.candidate_count, summary.failure_count
+    );
+    Ok(())
+}
+
 pub fn classify_dmesg_text(dmesg: &str, qemu_exit_code: i32) -> KernelReplayVerdict {
     if let Some((pattern, line)) = dangerous_line(dmesg) {
         let detail = normalize_signature_detail(line);
@@ -494,9 +507,9 @@ mod tests {
     use super::{
         KERNEL_REPLAY_REPORT_SCHEMA, KERNEL_REPLAY_SUMMARY_SCHEMA, KernelReplayOutcome,
         KernelReplayReportError, build_kernel_replay_report, classify_dmesg_text,
-        parse_kernel_replay_report, parse_kernel_replay_summary, run,
+        parse_kernel_replay_report, parse_kernel_replay_summary, run, run_summary,
     };
-    use crate::cli::KernelReportArgs;
+    use crate::cli::{KernelReportArgs, KernelSummaryArgs};
     use sha2::{Digest, Sha256};
     use std::fs;
 
@@ -624,6 +637,19 @@ mod tests {
         assert_eq!(summary.candidate_count, 2);
         assert_eq!(summary.failure_count, 1);
         assert_eq!(summary.reports.len(), 2);
+    }
+
+    #[test]
+    fn kernel_summary_command_accepts_valid_report() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let summary = tempdir.path().join("summary.json");
+        fs::write(&summary, VALID_SUMMARY).unwrap();
+
+        let args = KernelSummaryArgs {
+            summary: summary.to_string_lossy().to_string(),
+        };
+
+        run_summary(&args).unwrap();
     }
 
     #[test]

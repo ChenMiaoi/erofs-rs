@@ -30,6 +30,8 @@ pub enum Commands {
     Oracle(OracleArgs),
     /// Convert a captured QEMU dmesg log into a kernel replay report.
     KernelReport(KernelReportArgs),
+    /// Validate a scheduled kernel replay summary.
+    KernelSummary(KernelSummaryArgs),
     /// Validate a generated seed matrix manifest.
     SeedManifest(SeedManifestArgs),
     /// Print superblock, inode, and dirent information.
@@ -326,6 +328,12 @@ pub struct KernelReportArgs {
     pub qemu_exit_code: i32,
     #[arg(long, help = "Output kernel replay JSON report path")]
     pub output: String,
+}
+
+#[derive(Parser, Debug)]
+pub struct KernelSummaryArgs {
+    #[arg(long, help = "Path to a generated kernel replay summary JSON file")]
+    pub summary: String,
 }
 
 #[derive(Parser, Debug)]

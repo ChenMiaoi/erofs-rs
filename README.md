@@ -525,7 +525,8 @@ CI is split by cost and feedback speed:
   `make smoke-malformed`, writes `erofs-rs.kernel-replay.v1` JSON reports, and
   uploads the QEMU logs, exit codes, individual reports, and an
   `erofs-rs.kernel-replay-summary.v1` JSON summary with candidate and failure
-  counts.
+  counts. The candidate replay branch validates that summary with
+  `erofs-rs kernel-summary --summary ...` before upload.
 
 The `erofs-utils` safety checks do not prove the tools are safe. They report a
 bounded smoke result such as `tool crashes: 0`, `tool timeouts: 0`, and
