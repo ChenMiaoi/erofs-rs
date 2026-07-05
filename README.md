@@ -334,7 +334,8 @@ nightly rustc version, engine flags, per-target corpus counts before and after
 minimization, artifact counts, and log paths. The Rust library rejects unknown
 cmin-summary schemas, empty command flag lists, duplicate targets, and target
 summaries where `cmin` increased the unit count before later automation
-consumes it.
+consumes it. It also rejects target names or corpus, artifact, and log paths
+that do not match the weekly `corpus/rust-fuzz/<target>/` layout.
 
 ### Seed matrix generation
 

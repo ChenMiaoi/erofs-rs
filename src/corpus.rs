@@ -14,6 +14,7 @@ pub const COVERAGE_MANIFEST_SCHEMA: &str = "erofs-rs.coverage-corpus.v1";
 pub const CMIN_SUMMARY_SCHEMA: &str = "erofs-rs.cmin-summary.v1";
 const DEFAULT_COVERAGE_TARGET: &str = "unassigned";
 const MINIMIZED_IMPORT_ROOT: &str = "corpus/seeds/minimized";
+const RUST_FUZZ_CORPUS_ROOT: &str = "corpus/rust-fuzz";
 
 const KNOWN_RESULTS: &[&str] = &[
     "accepted",
@@ -461,6 +462,17 @@ pub enum CminSummaryError {
         before: usize,
         after: usize,
     },
+    #[error("cmin summary field {field} has invalid path: {path}")]
+    InvalidPath { field: &'static str, path: String },
+    #[error(
+        "cmin summary {field} mismatch for target {target}: expected {expected}, actual {actual}"
+    )]
+    PathMismatch {
+        field: &'static str,
+        target: String,
+        expected: String,
+        actual: String,
+    },
     #[error("cmin summary contains duplicate target: {0}")]
     DuplicateTarget(String),
 }
@@ -503,11 +515,42 @@ pub fn validate_cmin_summary_report(
 
 fn validate_cmin_target(target: &CminTargetSummary) -> std::result::Result<(), CminSummaryError> {
     require_cmin_nonempty("targets.target", &target.target)?;
+    require_cmin_path_component("targets.target", &target.target)?;
     require_cmin_nonempty("targets.corpus_dir", &target.corpus_dir)?;
     require_cmin_nonempty("targets.artifact_dir", &target.artifact_dir)?;
     require_cmin_nonempty("targets.run_log", &target.run_log)?;
     require_cmin_nonempty("targets.cmin_log", &target.cmin_log)?;
     require_cmin_nonempty("targets.regression_log", &target.regression_log)?;
+    require_cmin_path(
+        "targets.corpus_dir",
+        &target.target,
+        &target.corpus_dir,
+        cmin_target_path(&target.target, "corpus"),
+    )?;
+    require_cmin_path(
+        "targets.artifact_dir",
+        &target.target,
+        &target.artifact_dir,
+        cmin_target_path(&target.target, "artifacts"),
+    )?;
+    require_cmin_path(
+        "targets.run_log",
+        &target.target,
+        &target.run_log,
+        cmin_target_path(&target.target, "run.log"),
+    )?;
+    require_cmin_path(
+        "targets.cmin_log",
+        &target.target,
+        &target.cmin_log,
+        cmin_target_path(&target.target, "cmin.log"),
+    )?;
+    require_cmin_path(
+        "targets.regression_log",
+        &target.target,
+        &target.regression_log,
+        cmin_target_path(&target.target, "regression.log"),
+    )?;
 
     if target.after_cmin_units > target.before_cmin_units {
         return Err(CminSummaryError::CminIncreased {
@@ -518,6 +561,40 @@ fn validate_cmin_target(target: &CminTargetSummary) -> std::result::Result<(), C
     }
 
     Ok(())
+}
+
+fn require_cmin_path_component(
+    field: &'static str,
+    value: &str,
+) -> std::result::Result<(), CminSummaryError> {
+    if !is_portable_path_component(value) {
+        return Err(CminSummaryError::InvalidPath {
+            field,
+            path: value.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn require_cmin_path(
+    field: &'static str,
+    target: &str,
+    actual: &str,
+    expected: String,
+) -> std::result::Result<(), CminSummaryError> {
+    if actual != expected {
+        return Err(CminSummaryError::PathMismatch {
+            field,
+            target: target.to_string(),
+            expected,
+            actual: actual.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn cmin_target_path(target: &str, leaf: &str) -> String {
+    portable_path(&Path::new(RUST_FUZZ_CORPUS_ROOT).join(target).join(leaf))
 }
 
 fn require_cmin_nonempty(
@@ -1611,6 +1688,67 @@ mod tests {
         let error = parse_cmin_summary_report(&report).unwrap_err();
 
         assert!(matches!(error, CminSummaryError::EmptyList("cmin_flags")));
+    }
+
+    #[test]
+    fn cmin_summary_report_rejects_target_path_component() {
+        let mut report: serde_json::Value = serde_json::from_str(VALID_CMIN_SUMMARY).unwrap();
+        report["targets"][0]["target"] = serde_json::json!("../superblock_parse");
+        let report = serde_json::to_string(&report).unwrap();
+
+        let error = parse_cmin_summary_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            CminSummaryError::InvalidPath {
+                field: "targets.target",
+                path,
+            } if path == "../superblock_parse"
+        ));
+    }
+
+    #[test]
+    fn cmin_summary_report_rejects_corpus_dir_mismatch() {
+        let mut report: serde_json::Value = serde_json::from_str(VALID_CMIN_SUMMARY).unwrap();
+        report["targets"][0]["corpus_dir"] =
+            serde_json::json!("corpus/rust-fuzz/inode_locate/corpus");
+        let report = serde_json::to_string(&report).unwrap();
+
+        let error = parse_cmin_summary_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            CminSummaryError::PathMismatch {
+                field: "targets.corpus_dir",
+                target,
+                expected,
+                actual,
+            } if target == "superblock_parse"
+                && expected == "corpus/rust-fuzz/superblock_parse/corpus"
+                && actual == "corpus/rust-fuzz/inode_locate/corpus"
+        ));
+    }
+
+    #[test]
+    fn cmin_summary_report_rejects_regression_log_mismatch() {
+        let mut report: serde_json::Value = serde_json::from_str(VALID_CMIN_SUMMARY).unwrap();
+        report["targets"][0]["regression_log"] =
+            serde_json::json!("corpus/rust-fuzz/inode_locate/regression.log");
+        let report = serde_json::to_string(&report).unwrap();
+
+        let error = parse_cmin_summary_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            CminSummaryError::PathMismatch {
+                field: "targets.regression_log",
+                target,
+                expected,
+                actual,
+            } if target == "superblock_parse"
+                && expected == "corpus/rust-fuzz/superblock_parse/regression.log"
+                && actual == "corpus/rust-fuzz/inode_locate/regression.log"
+        ));
     }
 
     #[test]
