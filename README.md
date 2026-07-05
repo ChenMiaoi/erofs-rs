@@ -366,6 +366,8 @@ interesting findings so parser/tool/checksum/sanitizer/kernel mismatches can be
 triaged separately from ordinary malformed image rejections. `--json-report`
 writes the same checks, pairwise matrix verdicts, and interesting-finding count
 with the stable `erofs-rs.oracle-report.v1` schema for campaign automation.
+The parser rejects duplicate checks, duplicate matrix rows, and matrix rows
+that reference checks missing from the report.
 
 ## Library usage
 

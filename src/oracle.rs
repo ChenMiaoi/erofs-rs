@@ -8,6 +8,7 @@ use crate::kernel_replay::{KernelReplayOutcome, parse_kernel_replay_report};
 use crate::parse::{ParseMode, parse_image};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
@@ -97,6 +98,12 @@ pub enum OracleJsonReportError {
     },
     #[error("oracle JSON report matrix entry {0} has inconsistent verdict")]
     InconsistentVerdict(String),
+    #[error("oracle JSON report contains duplicate check: {0}")]
+    DuplicateCheck(String),
+    #[error("oracle JSON report contains duplicate matrix entry: {0}")]
+    DuplicateMatrixEntry(String),
+    #[error("oracle JSON report matrix entry {entry} references unknown check: {check}")]
+    UnknownMatrixCheck { entry: String, check: String },
     #[error("oracle JSON report interesting_findings is {actual}, expected {expected}")]
     InterestingFindingsMismatch { expected: usize, actual: usize },
 }
@@ -121,17 +128,43 @@ pub fn validate_oracle_json_report(
     if report.checks.is_empty() {
         return Err(OracleJsonReportError::EmptyList("checks"));
     }
+    let mut check_names = HashSet::new();
     for check in &report.checks {
         validate_json_check(check)?;
+        if !check_names.insert(check.name.as_str()) {
+            return Err(OracleJsonReportError::DuplicateCheck(check.name.clone()));
+        }
     }
+    let mut matrix_names = HashSet::new();
     for entry in &report.matrix {
         validate_matrix_entry(entry)?;
+        if !matrix_names.insert(entry.name.as_str()) {
+            return Err(OracleJsonReportError::DuplicateMatrixEntry(
+                entry.name.clone(),
+            ));
+        }
+        require_matrix_check(entry, &entry.left, &check_names)?;
+        require_matrix_check(entry, &entry.right, &check_names)?;
     }
     let expected = interesting_findings(&report.matrix);
     if report.interesting_findings != expected {
         return Err(OracleJsonReportError::InterestingFindingsMismatch {
             expected,
             actual: report.interesting_findings,
+        });
+    }
+    Ok(())
+}
+
+fn require_matrix_check(
+    entry: &OracleMatrixEntry,
+    check: &str,
+    check_names: &HashSet<&str>,
+) -> std::result::Result<(), OracleJsonReportError> {
+    if !check_names.contains(check) {
+        return Err(OracleJsonReportError::UnknownMatrixCheck {
+            entry: entry.name.clone(),
+            check: check.to_string(),
         });
     }
     Ok(())
@@ -735,6 +768,50 @@ mod tests {
         let error = parse_oracle_json_report(&report).unwrap_err();
 
         assert!(matches!(error, OracleJsonReportError::Decode(_)));
+    }
+
+    #[test]
+    fn oracle_json_report_parser_rejects_duplicate_check() {
+        let mut report: serde_json::Value = serde_json::from_str(VALID_JSON_REPORT).unwrap();
+        let check = report["checks"][0].clone();
+        report["checks"].as_array_mut().unwrap().push(check);
+        let report = serde_json::to_string(&report).unwrap();
+
+        let error = parse_oracle_json_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            OracleJsonReportError::DuplicateCheck(check) if check == "rust_parser"
+        ));
+    }
+
+    #[test]
+    fn oracle_json_report_parser_rejects_duplicate_matrix_entry() {
+        let mut report: serde_json::Value = serde_json::from_str(VALID_JSON_REPORT).unwrap();
+        let entry = report["matrix"][0].clone();
+        report["matrix"].as_array_mut().unwrap().push(entry);
+        let report = serde_json::to_string(&report).unwrap();
+
+        let error = parse_oracle_json_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            OracleJsonReportError::DuplicateMatrixEntry(entry)
+                if entry == "rust_parser_vs_fsck"
+        ));
+    }
+
+    #[test]
+    fn oracle_json_report_parser_rejects_unknown_matrix_check() {
+        let report = VALID_JSON_REPORT.replace(r#""right": "fsck""#, r#""right": "missing""#);
+
+        let error = parse_oracle_json_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            OracleJsonReportError::UnknownMatrixCheck { entry, check }
+                if entry == "rust_parser_vs_fsck" && check == "missing"
+        ));
     }
 
     #[test]
