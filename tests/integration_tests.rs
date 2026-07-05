@@ -140,6 +140,7 @@ fn test_tolerant_parse_reports_valid_fixture_offsets() {
         2
     );
     assert!(report.xattrs.is_empty());
+    assert!(report.chunks.is_empty());
     assert!(report.dirents.iter().filter(|entry| entry.is_ok()).count() >= 3);
     assert!(report.offsets_seen.contains(&EROFS_SUPER_OFFSET));
 }
@@ -260,6 +261,34 @@ fn test_tolerant_parse_records_invalid_inline_xattr_shared_count() {
             && error
                 .reason
                 .contains("inline xattr shared entries exceed region size")
+    }));
+}
+
+#[test]
+fn test_tolerant_parse_records_invalid_chunk_info() {
+    let mut img = read_image(fixture("single.erofs")).unwrap();
+    let report = parse_image(&img, ParseMode::FuzzTolerant).unwrap();
+    let inode_offset = report
+        .inodes
+        .iter()
+        .filter_map(|entry| entry.as_ref().ok())
+        .find(|inode| inode.desc != "root_directory")
+        .map(|inode| inode.offset)
+        .unwrap();
+    let i_format = img.read_field(inode_offset, FieldWidth::U16).unwrap();
+    let chunk_format = (i_format & 0x01) | (4 << 1);
+
+    img.write_field(inode_offset, FieldWidth::U16, chunk_format)
+        .unwrap();
+    img.write_field(inode_offset + 0x12, FieldWidth::U16, 0xFFFF)
+        .unwrap();
+    let report = parse_image(&img, ParseMode::FuzzTolerant).unwrap();
+
+    assert!(report.offsets_seen.contains(&(inode_offset + 0x12)));
+    assert!(report.errors.iter().any(|error| {
+        error.stage == ParseStage::Chunk
+            && error.offset == Some(inode_offset + 0x12)
+            && error.reason.contains("chunk info reserved field")
     }));
 }
 

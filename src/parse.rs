@@ -22,6 +22,7 @@ pub enum ParseStage {
     Superblock,
     Inode,
     Xattr,
+    Chunk,
     Dirent,
 }
 
@@ -31,6 +32,7 @@ impl fmt::Display for ParseStage {
             Self::Superblock => f.write_str("superblock"),
             Self::Inode => f.write_str("inode"),
             Self::Xattr => f.write_str("xattr"),
+            Self::Chunk => f.write_str("chunk"),
             Self::Dirent => f.write_str("dirent"),
         }
     }
@@ -61,6 +63,7 @@ pub struct ParseReport {
     pub superblock: Option<Superblock>,
     pub inodes: Vec<std::result::Result<Inode, ParseError>>,
     pub xattrs: Vec<std::result::Result<XattrRegion, ParseError>>,
+    pub chunks: Vec<std::result::Result<ChunkMap, ParseError>>,
     pub dirents: Vec<std::result::Result<Dirent, ParseError>>,
     pub errors: Vec<ParseError>,
     pub offsets_seen: BTreeSet<usize>,
@@ -76,9 +79,26 @@ pub struct XattrRegion {
     pub desc: String,
 }
 
+/// Located chunk map for a chunk-based inode.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChunkMap {
+    pub inode_nid: u64,
+    pub offset: usize,
+    pub entry_size: usize,
+    pub entry_count: usize,
+    pub chunk_bits: u8,
+    pub desc: String,
+}
+
 const INODE_SLOT_SIZE: usize = 32;
 const XATTR_HEADER_SIZE: usize = 12;
 const XATTR_SHARED_ENTRY_SIZE: usize = 4;
+const EROFS_INODE_CHUNK_BASED: u16 = 4;
+const EROFS_CHUNK_FORMAT_BLKBITS_MASK: u16 = 0x001F;
+const EROFS_CHUNK_FORMAT_INDEXES: u16 = 0x0020;
+const EROFS_CHUNK_FORMAT_ALL: u16 = 0x007F;
+const EROFS_BLOCK_MAP_ENTRY_SIZE: usize = 4;
+const EROFS_CHUNK_INDEX_ENTRY_SIZE: usize = 8;
 
 /// Parse an image with either strict CLI-style failure or fuzz-tolerant reporting.
 pub fn parse_image(image: &Image, mode: ParseMode) -> Result<ParseReport> {
@@ -140,6 +160,21 @@ pub fn parse_image(image: &Image, mode: ParseMode) -> Result<ParseReport> {
             match entry {
                 Ok(region) => {
                     report.offsets_seen.insert(region.offset);
+                }
+                Err(error) => {
+                    if let Some(offset) = error.offset {
+                        report.offsets_seen.insert(offset);
+                    }
+                    report.errors.push(error.clone());
+                }
+            }
+        }
+
+        report.chunks = locate_chunks_tolerant(image, &superblock, &parsed_inodes);
+        for entry in &report.chunks {
+            match entry {
+                Ok(map) => {
+                    report.offsets_seen.insert(map.offset);
                 }
                 Err(error) => {
                     if let Some(offset) = error.offset {
@@ -376,6 +411,10 @@ fn validate_xattr_region_tolerant(
 }
 
 fn xattr_ibody_size_tolerant(i_xattr_icount: u16) -> std::result::Result<usize, String> {
+    if i_xattr_icount == 0 {
+        return Ok(0);
+    }
+
     XATTR_HEADER_SIZE
         .checked_add(
             ((i_xattr_icount as usize) - 1)
@@ -395,6 +434,221 @@ fn inode_size_tolerant(image: &Image, inode_offset: usize) -> std::result::Resul
     let data = image.as_bytes();
     let i_format = u16::from_le_bytes([data[inode_offset], data[inode_offset + 1]]);
     Ok(if (i_format & 0x01) != 0 { 64 } else { 32 })
+}
+
+fn locate_chunks_tolerant(
+    image: &Image,
+    sb: &Superblock,
+    inodes: &[Inode],
+) -> Vec<std::result::Result<ChunkMap, ParseError>> {
+    let mut chunks = Vec::new();
+
+    for inode in inodes {
+        match validate_chunk_map_tolerant(image, sb, inode) {
+            Ok(Some(map)) => chunks.push(Ok(map)),
+            Ok(None) => {}
+            Err(errors) => chunks.extend(errors.into_iter().map(Err)),
+        }
+    }
+
+    chunks
+}
+
+fn validate_chunk_map_tolerant(
+    image: &Image,
+    sb: &Superblock,
+    inode: &Inode,
+) -> std::result::Result<Option<ChunkMap>, Vec<ParseError>> {
+    let mut errors = Vec::new();
+
+    if inode
+        .offset
+        .checked_add(0x14)
+        .is_none_or(|end| end > image.len())
+    {
+        return Err(vec![ParseError::new(
+            ParseStage::Chunk,
+            Some(inode.offset),
+            "chunk inode header out of bounds",
+        )]);
+    }
+
+    let data = image.as_bytes();
+    let i_format = u16::from_le_bytes([data[inode.offset], data[inode.offset + 1]]);
+    let datalayout = (i_format >> 1) & 0x7;
+    if datalayout != EROFS_INODE_CHUNK_BASED {
+        return Ok(None);
+    }
+
+    let chunk_format = u16::from_le_bytes([data[inode.offset + 0x10], data[inode.offset + 0x11]]);
+    if chunk_format & !EROFS_CHUNK_FORMAT_ALL != 0 {
+        errors.push(ParseError::new(
+            ParseStage::Chunk,
+            Some(inode.offset + 0x10),
+            format!("unsupported chunk format bits 0x{chunk_format:04X}"),
+        ));
+    }
+    let reserved = u16::from_le_bytes([data[inode.offset + 0x12], data[inode.offset + 0x13]]);
+    if reserved != 0 {
+        errors.push(ParseError::new(
+            ParseStage::Chunk,
+            Some(inode.offset + 0x12),
+            "chunk info reserved field is nonzero",
+        ));
+    }
+
+    let chunk_extra_bits = chunk_format & EROFS_CHUNK_FORMAT_BLKBITS_MASK;
+    let chunk_bits = u16::from(sb.blkszbits)
+        .checked_add(chunk_extra_bits)
+        .ok_or_else(|| {
+            vec![ParseError::new(
+                ParseStage::Chunk,
+                Some(inode.offset + 0x10),
+                "chunk bits overflow",
+            )]
+        })?;
+    if chunk_bits >= usize::BITS as u16 {
+        errors.push(ParseError::new(
+            ParseStage::Chunk,
+            Some(inode.offset + 0x10),
+            format!("chunk bits {chunk_bits} exceed host usize width"),
+        ));
+    }
+
+    let inode_size = match inode_size_tolerant(image, inode.offset) {
+        Ok(size) => size,
+        Err(reason) => {
+            errors.push(ParseError::new(
+                ParseStage::Chunk,
+                Some(inode.offset),
+                reason,
+            ));
+            0
+        }
+    };
+    let xattr_size = if inode
+        .offset
+        .checked_add(4)
+        .is_none_or(|end| end > image.len())
+    {
+        errors.push(ParseError::new(
+            ParseStage::Chunk,
+            Some(inode.offset),
+            "chunk inode xattr count out of bounds",
+        ));
+        0
+    } else {
+        let i_xattr_icount = u16::from_le_bytes([data[inode.offset + 2], data[inode.offset + 3]]);
+        match xattr_ibody_size_tolerant(i_xattr_icount) {
+            Ok(size) => size,
+            Err(reason) => {
+                errors.push(ParseError::new(
+                    ParseStage::Chunk,
+                    Some(inode.offset + 2),
+                    reason,
+                ));
+                0
+            }
+        }
+    };
+    let map_offset = match inode
+        .offset
+        .checked_add(inode_size)
+        .and_then(|offset| offset.checked_add(xattr_size))
+    {
+        Some(offset) => offset,
+        None => {
+            return Err(vec![ParseError::new(
+                ParseStage::Chunk,
+                Some(inode.offset),
+                "chunk map offset overflows",
+            )]);
+        }
+    };
+
+    let i_size = match inode_file_size(image, inode.offset) {
+        Ok(size) => size,
+        Err(error) => {
+            errors.push(ParseError::new(
+                ParseStage::Chunk,
+                Some(inode.offset),
+                format!("failed to read chunk inode size: {error}"),
+            ));
+            0
+        }
+    };
+    let chunk_size = if chunk_bits < usize::BITS as u16 {
+        1usize.checked_shl(u32::from(chunk_bits)).unwrap_or(0)
+    } else {
+        0
+    };
+    let entry_count = if i_size == 0 || chunk_size == 0 {
+        0
+    } else {
+        let chunk_size_u64 = u64::try_from(chunk_size).map_err(|_| {
+            vec![ParseError::new(
+                ParseStage::Chunk,
+                Some(inode.offset + 0x10),
+                "chunk size does not fit u64",
+            )]
+        })?;
+        let chunks = i_size.checked_add(chunk_size_u64 - 1).ok_or_else(|| {
+            vec![ParseError::new(
+                ParseStage::Chunk,
+                Some(inode.offset),
+                "chunk count overflows",
+            )]
+        })? / chunk_size_u64;
+        match usize::try_from(chunks) {
+            Ok(count) => count,
+            Err(_) => {
+                errors.push(ParseError::new(
+                    ParseStage::Chunk,
+                    Some(inode.offset),
+                    "chunk count does not fit host usize",
+                ));
+                0
+            }
+        }
+    };
+    let entry_size = if chunk_format & EROFS_CHUNK_FORMAT_INDEXES != 0 {
+        EROFS_CHUNK_INDEX_ENTRY_SIZE
+    } else {
+        EROFS_BLOCK_MAP_ENTRY_SIZE
+    };
+    let map_size = match entry_count.checked_mul(entry_size) {
+        Some(size) => size,
+        None => {
+            return Err(vec![ParseError::new(
+                ParseStage::Chunk,
+                Some(map_offset),
+                "chunk map size overflows",
+            )]);
+        }
+    };
+    if map_offset
+        .checked_add(map_size)
+        .is_none_or(|end| end > image.len())
+    {
+        errors.push(ParseError::new(
+            ParseStage::Chunk,
+            Some(map_offset),
+            format!("chunk map out of bounds (entries={entry_count}, entry_size={entry_size})"),
+        ));
+    }
+
+    if errors.is_empty() {
+        Ok(Some(ChunkMap {
+            inode_nid: inode.nid,
+            offset: map_offset,
+            entry_size,
+            entry_count,
+            chunk_bits: u8::try_from(chunk_bits).unwrap_or(u8::MAX),
+            desc: format!("{}_chunk_map", inode.desc),
+        }))
+    } else {
+        Err(errors)
+    }
 }
 
 fn locate_dirents_tolerant(
