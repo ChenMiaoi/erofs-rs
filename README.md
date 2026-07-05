@@ -126,7 +126,8 @@ erofs-rs mutate \
     --fix-checksum
 ```
 
-`--target` accepts `superblock`, `inode`, `dirent`, `xattr`, `chunk`, `compression`, `device`, `cross`, or `all`.
+`--target` accepts `superblock`, `inode`, `dirent`, `xattr`, `chunk`,
+`compression`, `fragment`, `device`, `cross`, or `all`.
 `mutate` runs `fsck.erofs` for each generated image and accepts the same
 execution-limit flags as `fuzz`: `--exec-timeout`, `--max-output-bytes`,
 `--rss-limit-mb`, and `--no-kill-process-group`.

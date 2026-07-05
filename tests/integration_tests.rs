@@ -777,6 +777,34 @@ fn test_mutate_compression() {
 }
 
 #[test]
+fn test_mutate_fragment() {
+    let tmp = TempDir::new().unwrap();
+    let out_dir = tmp.path().join("fragment");
+    let manifest = tmp.path().join("manifest.txt");
+
+    let args = erofs_rs::cli::MutateArgs {
+        input: fixture("single.erofs").to_string_lossy().to_string(),
+        output_dir: out_dir.to_string_lossy().to_string(),
+        manifest: manifest.to_string_lossy().to_string(),
+        fsck: fsck_path().to_string_lossy().to_string(),
+        target: "fragment".to_string(),
+        fix_checksum: true,
+        exec_timeout: 30,
+        max_output_bytes: 1024 * 1024,
+        no_kill_process_group: false,
+        rss_limit_mb: None,
+    };
+    erofs_rs::mutate::run(&args).unwrap();
+
+    assert!(manifest.exists());
+    assert!(fs::read_dir(&out_dir).unwrap().count() > 0);
+    let content = fs::read_to_string(&manifest).unwrap();
+    assert!(content.contains("# Families: fragment="));
+    assert!(content.contains("point_to_inode"));
+    assert!(content.contains("packed_whole_file"));
+}
+
+#[test]
 fn test_mutate_device() {
     let tmp = TempDir::new().unwrap();
     let out_dir = tmp.path().join("device");

@@ -15,9 +15,11 @@ use std::time::Duration;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const EROFS_FEATURE_INCOMPAT_48BIT: u32 = 0x00000080;
 const EROFS_FEATURE_INCOMPAT_DEVICE_TABLE: u64 = 0x00000008;
+const EROFS_FEATURE_INCOMPAT_FRAGMENTS: u64 = 0x00000020;
 const EROFS_INODE_COMPRESSED_FULL: u64 = 1;
 const EROFS_INODE_COMPRESSED_COMPACT: u64 = 3;
 const EROFS_INODE_CHUNK_BASED: u64 = 4;
+const EROFS_INODE_SLOT_SIZE: usize = 32;
 const EROFS_CHUNK_FORMAT_INDEXES: u64 = 0x0020;
 const EROFS_CHUNK_FORMAT_UNSUPPORTED_BIT: u64 = 0x0080;
 const EROFS_DEVT_SLOT_SIZE: usize = 128;
@@ -550,6 +552,16 @@ struct CompressionMutation {
     writes: Vec<FieldWrite>,
 }
 
+struct FragmentMutation {
+    output_name: String,
+    target_desc: String,
+    field_name: &'static str,
+    mutation_name: &'static str,
+    value_width: FieldWidth,
+    value: u64,
+    writes: Vec<FieldWrite>,
+}
+
 struct DeviceMutation {
     output_name: String,
     target_desc: String,
@@ -581,6 +593,31 @@ fn round_up_for_mutation(value: usize, align: usize) -> Result<usize> {
         .checked_add(align - 1)
         .map(|value| value & !(align - 1))
         .ok_or_else(|| anyhow::anyhow!("round_up({value}, {align}) overflows"))
+}
+
+fn packed_fragment_writes(
+    inode_offset: usize,
+    i_xattr_offset: usize,
+    map_offset: usize,
+    compact_layout: u64,
+) -> Vec<FieldWrite> {
+    vec![
+        FieldWrite {
+            abs_offset: inode_offset,
+            width: FieldWidth::U16,
+            value: compact_layout,
+        },
+        FieldWrite {
+            abs_offset: i_xattr_offset,
+            width: FieldWidth::U16,
+            value: 0,
+        },
+        FieldWrite {
+            abs_offset: map_offset,
+            width: FieldWidth::U64,
+            value: Z_EROFS_FRAGMENT_INODE_MASK,
+        },
+    ]
 }
 
 fn parser_outcome(image: &Image) -> String {
@@ -807,6 +844,62 @@ fn add_compression_mutation(
     entries.push(MutatedEntry {
         output_name: mutation.output_name,
         family: "compression".to_string(),
+        target_desc: mutation.target_desc,
+        field_name: mutation.field_name.to_string(),
+        mutation_name: mutation.mutation_name.to_string(),
+        value_hex: format!(
+            "0x{:0width$X}",
+            mutation.value,
+            width = mutation.value_width.bytes() * 2
+        ),
+        parser_outcome,
+        classification: classification.to_string(),
+        reason: reason.to_string(),
+    });
+
+    println!(
+        "[{classification:>20}] {:>15}.{:<25} -> {reason}",
+        mutation.field_name, mutation.mutation_name
+    );
+
+    Ok(true)
+}
+
+fn add_fragment_mutation(
+    entries: &mut Vec<MutatedEntry>,
+    image: &Image,
+    args: &MutateArgs,
+    mutation: FragmentMutation,
+) -> Result<bool> {
+    let mut changed = false;
+    for write in &mutation.writes {
+        if image.read_field(write.abs_offset, write.width)? != write.value {
+            changed = true;
+            break;
+        }
+    }
+    if !changed {
+        return Ok(false);
+    }
+
+    let mut mutated = image.clone();
+    for write in &mutation.writes {
+        mutated.write_field(write.abs_offset, write.width, write.value)?;
+    }
+
+    if args.fix_checksum {
+        fix_checksum(&mut mutated)?;
+    }
+
+    let output_path = Path::new(&args.output_dir).join(&mutation.output_name);
+    write_image(&output_path, &mutated)?;
+
+    let (classification, reason) = classify_mutated_image(args, &output_path)?;
+    let parser_outcome = parser_outcome(&mutated);
+
+    entries.push(MutatedEntry {
+        output_name: mutation.output_name,
+        family: "fragment".to_string(),
         target_desc: mutation.target_desc,
         field_name: mutation.field_name.to_string(),
         mutation_name: mutation.mutation_name.to_string(),
@@ -1428,29 +1521,150 @@ fn mutate_compressions(image: &Image, args: &MutateArgs) -> Result<Vec<MutatedEn
                 mutation_name: "packed_whole_file",
                 value_width: FieldWidth::U64,
                 value: Z_EROFS_FRAGMENT_INODE_MASK,
-                writes: vec![
-                    FieldWrite {
-                        abs_offset: inode.offset,
-                        width: FieldWidth::U16,
-                        value: compact_layout,
-                    },
-                    FieldWrite {
-                        abs_offset: i_xattr_offset,
-                        width: FieldWidth::U16,
-                        value: 0,
-                    },
-                    FieldWrite {
-                        abs_offset: map_offset,
-                        width: FieldWidth::U64,
-                        value: Z_EROFS_FRAGMENT_INODE_MASK,
-                    },
-                ],
+                writes: packed_fragment_writes(
+                    inode.offset,
+                    i_xattr_offset,
+                    map_offset,
+                    compact_layout,
+                ),
             },
         )?;
     }
 
     if entries.is_empty() {
         println!("WARNING: No compression mutations generated. Skipping.");
+    }
+
+    Ok(entries)
+}
+
+fn mutate_fragments(image: &Image, args: &MutateArgs) -> Result<Vec<MutatedEntry>> {
+    let seed = seed_name(&args.input);
+    let sb = image.superblock()?;
+    let inodes = locate_inodes(image, &sb)?;
+    let mut entries = Vec::new();
+
+    println!("Found {} inodes for fragment mutations", inodes.len());
+
+    let feature_incompat_offset = EROFS_SUPER_OFFSET
+        .checked_add(0x50)
+        .ok_or_else(|| anyhow::anyhow!("feature_incompat offset overflows"))?;
+    let packed_nid_offset = EROFS_SUPER_OFFSET
+        .checked_add(0x60)
+        .ok_or_else(|| anyhow::anyhow!("packed_nid offset overflows"))?;
+    if packed_nid_offset
+        .checked_add(FieldWidth::U64.bytes())
+        .is_some_and(|end| end <= image.len())
+    {
+        let fragment_feature = image.read_field(feature_incompat_offset, FieldWidth::U32)?
+            | EROFS_FEATURE_INCOMPAT_FRAGMENTS;
+        for inode in &inodes {
+            let _ = add_fragment_mutation(
+                &mut entries,
+                image,
+                args,
+                FragmentMutation {
+                    output_name: format!("{seed}_nid{}_fragment_packed_nid.erofs", inode.nid),
+                    target_desc: format!("superblock->{}", inode.desc),
+                    field_name: "packed_nid",
+                    mutation_name: "point_to_inode",
+                    value_width: FieldWidth::U64,
+                    value: inode.nid,
+                    writes: vec![
+                        FieldWrite {
+                            abs_offset: feature_incompat_offset,
+                            width: FieldWidth::U32,
+                            value: fragment_feature,
+                        },
+                        FieldWrite {
+                            abs_offset: packed_nid_offset,
+                            width: FieldWidth::U64,
+                            value: inode.nid,
+                        },
+                    ],
+                },
+            )?;
+        }
+
+        let invalid_packed_nid =
+            u64::try_from(image.len().saturating_sub(sb.meta_offset) / EROFS_INODE_SLOT_SIZE)
+                .unwrap_or(u64::MAX)
+                .saturating_add(1);
+        let _ = add_fragment_mutation(
+            &mut entries,
+            image,
+            args,
+            FragmentMutation {
+                output_name: format!("{seed}_fragment_packed_nid_oob.erofs"),
+                target_desc: "superblock".to_string(),
+                field_name: "packed_nid",
+                mutation_name: "out_of_bounds",
+                value_width: FieldWidth::U64,
+                value: invalid_packed_nid,
+                writes: vec![
+                    FieldWrite {
+                        abs_offset: feature_incompat_offset,
+                        width: FieldWidth::U32,
+                        value: fragment_feature,
+                    },
+                    FieldWrite {
+                        abs_offset: packed_nid_offset,
+                        width: FieldWidth::U64,
+                        value: invalid_packed_nid,
+                    },
+                ],
+            },
+        )?;
+    }
+
+    for inode in &inodes {
+        let inode_size = if is_extended_inode(image, inode.offset)? {
+            64usize
+        } else {
+            32usize
+        };
+        let map_end = inode
+            .offset
+            .checked_add(inode_size)
+            .ok_or_else(|| anyhow::anyhow!("fragment map header offset overflows"))?;
+        let map_offset = round_up_for_mutation(map_end, 8)?;
+        if map_offset
+            .checked_add(Z_EROFS_MAP_HEADER_SIZE)
+            .is_none_or(|end| end > image.len())
+        {
+            continue;
+        }
+
+        let i_xattr_offset = inode
+            .offset
+            .checked_add(0x02)
+            .ok_or_else(|| anyhow::anyhow!("inode xattr count offset overflows"))?;
+
+        let original_format = image.read_field(inode.offset, FieldWidth::U16)?;
+        let compact_layout = (original_format & 0x01) | (EROFS_INODE_COMPRESSED_COMPACT << 1);
+        let _ = add_fragment_mutation(
+            &mut entries,
+            image,
+            args,
+            FragmentMutation {
+                output_name: format!("{seed}_nid{}_fragment_packed_whole_file.erofs", inode.nid),
+                target_desc: inode.desc.clone(),
+                field_name: "z_fragmentoff",
+                mutation_name: "packed_whole_file",
+                value_width: FieldWidth::U64,
+                value: Z_EROFS_FRAGMENT_INODE_MASK,
+                writes: packed_fragment_writes(
+                    inode.offset,
+                    i_xattr_offset,
+                    map_offset,
+                    compact_layout,
+                ),
+            },
+        )?;
+    }
+
+    if entries.is_empty() {
+        println!("WARNING: No fragment mutations generated. Skipping.");
     }
 
     Ok(entries)
@@ -2142,6 +2356,7 @@ pub fn run(args: &MutateArgs) -> Result<()> {
         "xattr" => all_entries.extend(mutate_xattrs(&image, args)?),
         "chunk" => all_entries.extend(mutate_chunks(&image, args)?),
         "compression" => all_entries.extend(mutate_compressions(&image, args)?),
+        "fragment" => all_entries.extend(mutate_fragments(&image, args)?),
         "device" => all_entries.extend(mutate_devices(&image, args)?),
         "cross" => all_entries.extend(mutate_cross_fields(&image, args)?),
         "all" => {
@@ -2151,11 +2366,12 @@ pub fn run(args: &MutateArgs) -> Result<()> {
             all_entries.extend(mutate_xattrs(&image, args)?);
             all_entries.extend(mutate_chunks(&image, args)?);
             all_entries.extend(mutate_compressions(&image, args)?);
+            all_entries.extend(mutate_fragments(&image, args)?);
             all_entries.extend(mutate_devices(&image, args)?);
             all_entries.extend(mutate_cross_fields(&image, args)?);
         }
         _ => bail!(
-            "unknown mutation target: {} (expected superblock|inode|dirent|xattr|chunk|compression|device|cross|all)",
+            "unknown mutation target: {} (expected superblock|inode|dirent|xattr|chunk|compression|fragment|device|cross|all)",
             args.target
         ),
     }
