@@ -291,7 +291,10 @@ Generated libFuzzer corpora and artifacts under `fuzz/corpus/`,
 committed unless a minimized regression is intentionally added.
 The periodic fuzzing workflow runs `cargo fuzz cmin` for each target and then
 replays the minimized corpus with `-runs=0` before collecting it as a review
-artifact.
+artifact. It also uploads `corpus/rust-fuzz/cmin-summary.json`, a
+machine-readable `erofs-rs.cmin-summary.v1` report with cargo-fuzz version,
+nightly rustc version, engine flags, per-target corpus counts before and after
+minimization, artifact counts, and log paths.
 
 ### Seed matrix generation
 
@@ -445,7 +448,8 @@ CI is split by cost and feedback speed:
   structured mutations, classifies artifacts, builds the upstream libFuzzer
   target, runs a short fuzzing session, runs the Rust-native libFuzzer targets
   and `cargo fuzz cmin` corpus minimization, collects the minimized Rust fuzz
-  corpus with `erofs-rs corpus --mode coverage`, builds ASAN/UBSAN-instrumented
+  corpus with `erofs-rs corpus --mode coverage`, records a cmin summary with
+  engine metadata and before/after unit counts, builds ASAN/UBSAN-instrumented
   `erofs-utils`, scans seeds and generated artifacts for tool crashes,
   timeouts, and sanitizer diagnostics, and uploads reports, minimized corpora,
   logs, and manifests.

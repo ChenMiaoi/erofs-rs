@@ -83,6 +83,21 @@ When collecting a cargo-fuzz tree, coverage mode reads `<target>/corpus/`
 entries and skips `<target>/artifacts/` so crash artifacts stay in triage
 bundles instead of entering the minimized seed import path.
 
+## Cmin Summary
+
+The periodic fuzzing workflow writes `corpus/rust-fuzz/cmin-summary.json` using
+the `erofs-rs.cmin-summary.v1` schema before collecting minimized units. It
+records the cargo-fuzz version, nightly rustc version, run/cmin/regression
+flags, and one entry per target with:
+
+- corpus unit counts before and after `cargo fuzz cmin`,
+- crash artifact counts,
+- corpus and artifact directories,
+- run, cmin, and `-runs=0` regression log paths.
+
+Use this report with `coverage-manifest.json` to review whether a minimized
+unit should be imported into `corpus/seeds/minimized/<target>/`.
+
 ## Fuzz Campaign Artifacts
 
 `erofs-rs fuzz` writes one artifact set per unique mutated image:

@@ -117,6 +117,11 @@ jobs:
       - name: Run Rust libFuzzer campaign
         run: |
           mkdir -p corpus/rust-fuzz
+          cmin_jsonl="corpus/rust-fuzz/cmin-summary.jsonl"
+          cmin_summary="corpus/rust-fuzz/cmin-summary.json"
+          : > "$cmin_jsonl"
+          cargo_fuzz_version="$(cargo fuzz --version)"
+          rustc_version="$(rustc +nightly --version)"
           targets=(
             superblock_parse
             inode_locate
@@ -139,14 +144,79 @@ jobs:
               -artifact_prefix="${artifact_dir}/" \
               -print_final_stats=1 \
               2>&1 | tee "corpus/rust-fuzz/${target}/run.log"
+            before_cmin_units="$(find "$corpus_dir" -type f | wc -l | tr -d '[:space:]')"
             cargo +nightly fuzz cmin "$target" "$corpus_dir" -- \
               -max_total_time=30 \
               2>&1 | tee "corpus/rust-fuzz/${target}/cmin.log"
+            after_cmin_units="$(find "$corpus_dir" -type f | wc -l | tr -d '[:space:]')"
+            artifact_count="$(find "$artifact_dir" -type f | wc -l | tr -d '[:space:]')"
             cargo +nightly fuzz run "$target" "$corpus_dir" -- \
               -runs=0 \
               -artifact_prefix="${artifact_dir}/" \
               2>&1 | tee "corpus/rust-fuzz/${target}/regression.log"
+            python3 - "$cmin_jsonl" "$target" "$before_cmin_units" \
+              "$after_cmin_units" "$artifact_count" "$corpus_dir" "$artifact_dir" <<'PY'
+          import json
+          import sys
+
+          (
+              output,
+              target,
+              before_cmin_units,
+              after_cmin_units,
+              artifact_count,
+              corpus_dir,
+              artifact_dir,
+          ) = sys.argv[1:]
+          entry = {
+              "target": target,
+              "corpus_dir": corpus_dir,
+              "artifact_dir": artifact_dir,
+              "before_cmin_units": int(before_cmin_units),
+              "after_cmin_units": int(after_cmin_units),
+              "artifact_count": int(artifact_count),
+              "run_log": f"corpus/rust-fuzz/{target}/run.log",
+              "cmin_log": f"corpus/rust-fuzz/{target}/cmin.log",
+              "regression_log": f"corpus/rust-fuzz/{target}/regression.log",
+          }
+          with open(output, "a", encoding="utf-8") as handle:
+              handle.write(json.dumps(entry, sort_keys=True) + "\n")
+          PY
           done
+          python3 - "$cmin_jsonl" "$cmin_summary" \
+            "$cargo_fuzz_version" "$rustc_version" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          jsonl, output, cargo_fuzz_version, rustc_version = sys.argv[1:]
+          entries = [
+              json.loads(line)
+              for line in Path(jsonl).read_text(encoding="utf-8").splitlines()
+              if line.strip()
+          ]
+          report = {
+              "schema": "erofs-rs.cmin-summary.v1",
+              "engine": "cargo-fuzz",
+              "engine_version": cargo_fuzz_version,
+              "toolchain": rustc_version,
+              "run_flags": [
+                  "-max_total_time=30",
+                  "-artifact_prefix=<target-artifact-dir>/",
+                  "-print_final_stats=1",
+              ],
+              "cmin_flags": ["-max_total_time=30"],
+              "regression_flags": [
+                  "-runs=0",
+                  "-artifact_prefix=<target-artifact-dir>/",
+              ],
+              "targets": entries,
+          }
+          with open(output, "w", encoding="utf-8") as handle:
+              json.dump(report, handle, indent=2, sort_keys=True)
+              handle.write("\n")
+          PY
+          rm -f "$cmin_jsonl"
 
       - name: Collect minimized Rust fuzz corpus
         run: |
@@ -181,6 +251,7 @@ jobs:
             corpus/fuzz-out/
             corpus/minimized/
             corpus/rust-fuzz/
+            corpus/rust-fuzz/cmin-summary.json
             corpus/seeds/matrix/manifest.json
             corpus/erofs-utils-safety/
             corpus/erofs-utils-safety-sanitized/

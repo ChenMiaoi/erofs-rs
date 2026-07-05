@@ -310,7 +310,7 @@ fn should_collect_coverage_file(path: &Path) -> bool {
     }
     !matches!(
         path.extension().and_then(|ext| ext.to_str()),
-        Some("json" | "log" | "stdout" | "stderr")
+        Some("json" | "jsonl" | "log" | "stdout" | "stderr")
     )
 }
 
@@ -729,6 +729,9 @@ mod tests {
         assert!(!should_collect_coverage_file(Path::new("manifest.txt")));
         assert!(!should_collect_coverage_file(Path::new("run.log")));
         assert!(!should_collect_coverage_file(Path::new("sidecar.json")));
+        assert!(!should_collect_coverage_file(Path::new(
+            "cmin-summary.jsonl"
+        )));
         assert!(!should_collect_coverage_file(Path::new(
             "superblock_parse/artifacts/crash-unit"
         )));

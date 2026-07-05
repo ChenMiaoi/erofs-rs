@@ -87,6 +87,7 @@ metadata instead of guessing how an artifact was produced.
 | bucket database | `erofs-rs triage` | `erofs-rs.bucket-db.v1` | Cross-campaign signature counts and examples |
 | oracle JSON report | `erofs-rs oracle` | `erofs-rs.oracle-report.v1` | Machine-readable differential oracle rows |
 | coverage manifest | `erofs-rs corpus --mode coverage` | `erofs-rs.coverage-corpus.v1` | Coverage corpus provenance and lifecycle buckets |
+| cmin summary | periodic fuzz workflow | `erofs-rs.cmin-summary.v1` | Per-target minimization counts, engine flags, and toolchain metadata |
 | seed matrix manifest | `generate-seed-matrix.sh` | JSON array | Reproducible seed provenance and feature tags |
 | finding bundle manifest | library validator | `erofs-rs.finding-bundle.v1` | Portable triage bundle index |
 | kernel replay report | library schema | `erofs-rs.kernel-replay.v1` | Dmesg classification and unsafe signal metadata |

@@ -962,6 +962,8 @@ fn test_corpus_coverage_mode_collects_minimized_units() {
     .unwrap();
     fs::write(target_b.join("unit-c"), b"coverage-b").unwrap();
     fs::write(corpus.join("run.log"), b"not corpus").unwrap();
+    fs::write(corpus.join("cmin-summary.json"), b"{}").unwrap();
+    fs::write(corpus.join("cmin-summary.jsonl"), b"{}\n").unwrap();
 
     let args = erofs_rs::cli::CorpusArgs {
         input_dir: corpus.to_string_lossy().to_string(),
