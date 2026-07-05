@@ -249,7 +249,8 @@ duplicate paths so each bundle role points at a distinct attachment.
 Replay JSON reports use the `erofs-rs.replay-report.v1` schema. Generate one
 with `erofs-rs replay --sidecar <fuzz_*.json> --json-report replay-report.json`
 so bundles can carry the original sidecar outcome, replayed fsck outcome, and
-match booleans without scraping the text report.
+match booleans without scraping the text report. The parser rejects original
+signatures that do not match the recorded classification prefix.
 
 ## Import Rules
 

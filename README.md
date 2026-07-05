@@ -259,7 +259,9 @@ path is stale, `replay` also checks for an artifact with the same file name
 next to the sidecar, which keeps finding bundles portable across machines. Use
 `--artifact` or `--fsck` to override the sidecar paths during local triage.
 `--json-report` writes the stable `erofs-rs.replay-report.v1` schema with
-original and replayed fsck outcomes plus match booleans for automation.
+original and replayed fsck outcomes plus match booleans for automation. The
+parser rejects original signatures that do not match the recorded
+classification prefix.
 
 ### Finding bundles
 

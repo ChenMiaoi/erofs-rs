@@ -74,6 +74,13 @@ pub enum ReplayReportError {
     EmptyField(&'static str),
     #[error("replay report field {field} has invalid SHA-256 digest: {sha256}")]
     InvalidSha256 { field: &'static str, sha256: String },
+    #[error(
+        "replay report original signature {signature} does not match classification {classification}"
+    )]
+    SignatureClassificationMismatch {
+        classification: String,
+        signature: String,
+    },
     #[error("replay report comparison field {0} does not match outcomes")]
     InconsistentComparison(&'static str),
 }
@@ -112,6 +119,15 @@ fn validate_original_outcome(
     require_replay_nonempty("original.classification", &outcome.classification)?;
     require_replay_nonempty("original.reason", &outcome.reason)?;
     require_replay_nonempty("original.signature", &outcome.signature)?;
+    let signature_prefix = format!("{}: ", outcome.classification);
+    if outcome.signature != outcome.classification
+        && !outcome.signature.starts_with(&signature_prefix)
+    {
+        return Err(ReplayReportError::SignatureClassificationMismatch {
+            classification: outcome.classification.clone(),
+            signature: outcome.signature.clone(),
+        });
+    }
     Ok(())
 }
 
@@ -589,6 +605,37 @@ mod tests {
                 field: "artifact_sha256",
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn replay_report_parser_rejects_signature_mismatch() {
+        let sidecar = sidecar("artifact.erofs", "accepted");
+        let result = FsckResult {
+            exit_code: 0,
+            classification: "accepted".to_string(),
+            reason: "fsck accepted the image".to_string(),
+            ..FsckResult::default()
+        };
+        let mut report = build_replay_report(
+            Path::new("fuzz_seed_iter1.json"),
+            Path::new("artifact.erofs"),
+            "fsck.erofs",
+            &sidecar,
+            &result,
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        );
+        report.original.signature = "rejected_invalid: bad inode".to_string();
+
+        let error = validate_replay_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            ReplayReportError::SignatureClassificationMismatch {
+                classification,
+                signature,
+            } if classification == "accepted"
+                && signature == "rejected_invalid: bad inode"
         ));
     }
 
