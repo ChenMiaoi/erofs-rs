@@ -24,6 +24,7 @@ pub enum ParseStage {
     Xattr,
     Chunk,
     Compression,
+    Device,
     Dirent,
 }
 
@@ -35,6 +36,7 @@ impl fmt::Display for ParseStage {
             Self::Xattr => f.write_str("xattr"),
             Self::Chunk => f.write_str("chunk"),
             Self::Compression => f.write_str("compression"),
+            Self::Device => f.write_str("device"),
             Self::Dirent => f.write_str("dirent"),
         }
     }
@@ -67,6 +69,7 @@ pub struct ParseReport {
     pub xattrs: Vec<std::result::Result<XattrRegion, ParseError>>,
     pub chunks: Vec<std::result::Result<ChunkMap, ParseError>>,
     pub compressions: Vec<std::result::Result<CompressionMap, ParseError>>,
+    pub devices: Vec<std::result::Result<DeviceSlot, ParseError>>,
     pub dirents: Vec<std::result::Result<Dirent, ParseError>>,
     pub errors: Vec<ParseError>,
     pub offsets_seen: BTreeSet<usize>,
@@ -106,9 +109,24 @@ pub struct CompressionMap {
     pub desc: String,
 }
 
+/// Located extra-device table slot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeviceSlot {
+    pub index: u16,
+    pub offset: usize,
+    pub blocks: u64,
+    pub uniaddr: u64,
+    pub tag_first: u8,
+    pub desc: String,
+}
+
 const INODE_SLOT_SIZE: usize = 32;
 const XATTR_HEADER_SIZE: usize = 12;
 const XATTR_SHARED_ENTRY_SIZE: usize = 4;
+const EROFS_FEATURE_INCOMPAT_DEVICE_TABLE: u32 = 0x00000008;
+const EROFS_FEATURE_INCOMPAT_48BIT: u32 = 0x00000080;
+const EROFS_DEVT_SLOT_SIZE: usize = 128;
+const EROFS_DEVT_SLOT_RESERVED_OFFSET: usize = 0x4C;
 const EROFS_INODE_COMPRESSED_FULL: u16 = 1;
 const EROFS_INODE_COMPRESSED_COMPACT: u16 = 3;
 const EROFS_INODE_CHUNK_BASED: u16 = 4;
@@ -217,6 +235,21 @@ pub fn parse_image(image: &Image, mode: ParseMode) -> Result<ParseReport> {
             match entry {
                 Ok(map) => {
                     report.offsets_seen.insert(map.offset);
+                }
+                Err(error) => {
+                    if let Some(offset) = error.offset {
+                        report.offsets_seen.insert(offset);
+                    }
+                    report.errors.push(error.clone());
+                }
+            }
+        }
+
+        report.devices = locate_devices_tolerant(image, &superblock);
+        for entry in &report.devices {
+            match entry {
+                Ok(slot) => {
+                    report.offsets_seen.insert(slot.offset);
                 }
                 Err(error) => {
                     if let Some(offset) = error.offset {
@@ -911,6 +944,243 @@ fn validate_compression_map_tolerant(
             fragment_packed,
             desc: format!("{}_compression", inode.desc),
         }))
+    } else {
+        Err(errors)
+    }
+}
+
+fn locate_devices_tolerant(
+    image: &Image,
+    sb: &Superblock,
+) -> Vec<std::result::Result<DeviceSlot, ParseError>> {
+    let mut slots = Vec::new();
+    let has_device_table = sb.feature_incompat & EROFS_FEATURE_INCOMPAT_DEVICE_TABLE != 0;
+
+    if !has_device_table {
+        if sb.extra_devices != 0 {
+            slots.push(Err(ParseError::new(
+                ParseStage::Device,
+                Some(EROFS_SUPER_OFFSET + 0x56),
+                "extra devices advertised without device table feature",
+            )));
+        }
+        return slots;
+    }
+    if sb.extra_devices == 0 {
+        return slots;
+    }
+
+    let slot_count = usize::from(sb.extra_devices);
+    let table_offset = match usize::from(sb.devt_slotoff).checked_mul(EROFS_DEVT_SLOT_SIZE) {
+        Some(offset) => offset,
+        None => {
+            return vec![Err(ParseError::new(
+                ParseStage::Device,
+                Some(EROFS_SUPER_OFFSET + 0x58),
+                "device table offset overflows",
+            ))];
+        }
+    };
+    let table_size = match slot_count.checked_mul(EROFS_DEVT_SLOT_SIZE) {
+        Some(size) => size,
+        None => {
+            return vec![Err(ParseError::new(
+                ParseStage::Device,
+                Some(table_offset),
+                "device table size overflows",
+            ))];
+        }
+    };
+    if table_offset
+        .checked_add(table_size)
+        .is_none_or(|end| end > image.len())
+    {
+        return vec![Err(ParseError::new(
+            ParseStage::Device,
+            Some(table_offset),
+            format!(
+                "device table out of bounds (slots={}, image_len={})",
+                sb.extra_devices,
+                image.len()
+            ),
+        ))];
+    }
+
+    for index in 0..slot_count {
+        let offset = match index
+            .checked_mul(EROFS_DEVT_SLOT_SIZE)
+            .and_then(|relative| table_offset.checked_add(relative))
+        {
+            Some(offset) => offset,
+            None => {
+                slots.push(Err(ParseError::new(
+                    ParseStage::Device,
+                    Some(table_offset),
+                    "device slot offset overflows",
+                )));
+                break;
+            }
+        };
+        match validate_device_slot_tolerant(image, sb, index, offset) {
+            Ok(slot) => slots.push(Ok(slot)),
+            Err(errors) => slots.extend(errors.into_iter().map(Err)),
+        }
+    }
+
+    slots
+}
+
+fn validate_device_slot_tolerant(
+    image: &Image,
+    sb: &Superblock,
+    index: usize,
+    offset: usize,
+) -> std::result::Result<DeviceSlot, Vec<ParseError>> {
+    let mut errors = Vec::new();
+    let data = image.as_bytes();
+
+    let blocks_lo_offset = offset.checked_add(0x40).ok_or_else(|| {
+        vec![ParseError::new(
+            ParseStage::Device,
+            Some(offset),
+            "device blocks_lo offset overflows",
+        )]
+    })?;
+    let uniaddr_lo_offset = offset.checked_add(0x44).ok_or_else(|| {
+        vec![ParseError::new(
+            ParseStage::Device,
+            Some(offset),
+            "device uniaddr_lo offset overflows",
+        )]
+    })?;
+    let blocks_hi_offset = offset.checked_add(0x48).ok_or_else(|| {
+        vec![ParseError::new(
+            ParseStage::Device,
+            Some(offset),
+            "device blocks_hi offset overflows",
+        )]
+    })?;
+    let uniaddr_hi_offset = offset.checked_add(0x4A).ok_or_else(|| {
+        vec![ParseError::new(
+            ParseStage::Device,
+            Some(offset),
+            "device uniaddr_hi offset overflows",
+        )]
+    })?;
+    let reserved_offset = offset
+        .checked_add(EROFS_DEVT_SLOT_RESERVED_OFFSET)
+        .ok_or_else(|| {
+            vec![ParseError::new(
+                ParseStage::Device,
+                Some(offset),
+                "device reserved offset overflows",
+            )]
+        })?;
+
+    let tag_first = data[offset];
+    if tag_first == 0 {
+        errors.push(ParseError::new(
+            ParseStage::Device,
+            Some(offset),
+            "device slot tag is empty",
+        ));
+    }
+
+    let read_u16 =
+        |field_offset: usize, field: &str| -> std::result::Result<u16, Vec<ParseError>> {
+            let end = field_offset.checked_add(2).ok_or_else(|| {
+                vec![ParseError::new(
+                    ParseStage::Device,
+                    Some(field_offset),
+                    format!("device {field} field end overflows"),
+                )]
+            })?;
+            let bytes = data.get(field_offset..end).ok_or_else(|| {
+                vec![ParseError::new(
+                    ParseStage::Device,
+                    Some(field_offset),
+                    format!("device {field} field out of bounds"),
+                )]
+            })?;
+            Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
+        };
+    let read_u32 =
+        |field_offset: usize, field: &str| -> std::result::Result<u32, Vec<ParseError>> {
+            let end = field_offset.checked_add(4).ok_or_else(|| {
+                vec![ParseError::new(
+                    ParseStage::Device,
+                    Some(field_offset),
+                    format!("device {field} field end overflows"),
+                )]
+            })?;
+            let bytes = data.get(field_offset..end).ok_or_else(|| {
+                vec![ParseError::new(
+                    ParseStage::Device,
+                    Some(field_offset),
+                    format!("device {field} field out of bounds"),
+                )]
+            })?;
+            Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        };
+
+    let blocks_lo = read_u32(blocks_lo_offset, "blocks_lo")?;
+    let uniaddr_lo = read_u32(uniaddr_lo_offset, "uniaddr_lo")?;
+    let has_48bit = sb.feature_incompat & EROFS_FEATURE_INCOMPAT_48BIT != 0;
+    let blocks = u64::from(blocks_lo)
+        | if has_48bit {
+            u64::from(read_u16(blocks_hi_offset, "blocks_hi")?) << 32
+        } else {
+            0
+        };
+    let uniaddr = u64::from(uniaddr_lo)
+        | if has_48bit {
+            u64::from(read_u16(uniaddr_hi_offset, "uniaddr_hi")?) << 32
+        } else {
+            0
+        };
+    if blocks == 0 {
+        errors.push(ParseError::new(
+            ParseStage::Device,
+            Some(blocks_lo_offset),
+            "device slot has zero blocks",
+        ));
+    }
+
+    let reserved_end = offset.checked_add(EROFS_DEVT_SLOT_SIZE).ok_or_else(|| {
+        vec![ParseError::new(
+            ParseStage::Device,
+            Some(offset),
+            "device slot end overflows",
+        )]
+    })?;
+    if let Some((rel, _)) = data[reserved_offset..reserved_end]
+        .iter()
+        .enumerate()
+        .find(|(_, byte)| **byte != 0)
+    {
+        errors.push(ParseError::new(
+            ParseStage::Device,
+            Some(reserved_offset + rel),
+            "device slot reserved byte is nonzero",
+        ));
+    }
+
+    if errors.is_empty() {
+        let index = u16::try_from(index).map_err(|_| {
+            vec![ParseError::new(
+                ParseStage::Device,
+                Some(offset),
+                "device slot index does not fit u16",
+            )]
+        })?;
+        Ok(DeviceSlot {
+            index,
+            offset,
+            blocks,
+            uniaddr,
+            tag_first,
+            desc: format!("device_slot_{index}"),
+        })
     } else {
         Err(errors)
     }

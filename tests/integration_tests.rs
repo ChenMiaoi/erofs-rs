@@ -142,6 +142,7 @@ fn test_tolerant_parse_reports_valid_fixture_offsets() {
     assert!(report.xattrs.is_empty());
     assert!(report.chunks.is_empty());
     assert!(report.compressions.is_empty());
+    assert!(report.devices.is_empty());
     assert!(report.dirents.iter().filter(|entry| entry.is_ok()).count() >= 3);
     assert!(report.offsets_seen.contains(&EROFS_SUPER_OFFSET));
 }
@@ -325,6 +326,46 @@ fn test_tolerant_parse_records_invalid_compression_header() {
         error.stage == ParseStage::Compression
             && error.offset == Some(cluster_bits_offset)
             && error.reason.contains("reserved compression cluster bits")
+    }));
+}
+
+#[test]
+fn test_tolerant_parse_records_invalid_device_slot() {
+    let mut img = read_image(fixture("single.erofs")).unwrap();
+    let slot_offset = EROFS_SUPER_OFFSET
+        .checked_add(2 * 128)
+        .expect("device slot offset");
+    let slot_number = u64::try_from(slot_offset / 128).unwrap();
+    let feature_offset = EROFS_SUPER_OFFSET
+        .checked_add(0x50)
+        .expect("feature offset");
+    let extra_devices_offset = EROFS_SUPER_OFFSET
+        .checked_add(0x56)
+        .expect("extra devices offset");
+    let devt_slotoff_offset = EROFS_SUPER_OFFSET
+        .checked_add(0x58)
+        .expect("device slot offset field");
+    let blocks_offset = slot_offset.checked_add(0x40).expect("blocks offset");
+    let uniaddr_offset = slot_offset.checked_add(0x44).expect("uniaddr offset");
+
+    let feature = img.read_field(feature_offset, FieldWidth::U32).unwrap() | 0x00000008;
+    img.write_field(feature_offset, FieldWidth::U32, feature)
+        .unwrap();
+    img.write_field(extra_devices_offset, FieldWidth::U16, 1)
+        .unwrap();
+    img.write_field(devt_slotoff_offset, FieldWidth::U16, slot_number)
+        .unwrap();
+    img.write_field(slot_offset, FieldWidth::U64, 0).unwrap();
+    img.write_field(blocks_offset, FieldWidth::U32, 1).unwrap();
+    img.write_field(uniaddr_offset, FieldWidth::U32, 1).unwrap();
+
+    let report = parse_image(&img, ParseMode::FuzzTolerant).unwrap();
+
+    assert!(report.offsets_seen.contains(&slot_offset));
+    assert!(report.errors.iter().any(|error| {
+        error.stage == ParseStage::Device
+            && error.offset == Some(slot_offset)
+            && error.reason.contains("device slot tag is empty")
     }));
 }
 
