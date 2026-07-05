@@ -284,7 +284,9 @@ impl OutcomeKind {
             | "rejected_corruption"
             | "rejected_invalid"
             | "rejected_io_error" => Self::ExpectedReject,
-            "accepted_with_errors" | "rejected_other" => Self::InterestingSemantic,
+            "accepted_with_errors" | "rejected_other" | "oracle_disagreement" => {
+                Self::InterestingSemantic
+            }
             "rejected_timeout" => Self::UnsafeTimeout,
             classification
                 if classification.contains("crash")
@@ -1399,6 +1401,10 @@ mod tests {
         );
         assert_eq!(
             OutcomeKind::from_classification("rejected_other"),
+            OutcomeKind::InterestingSemantic
+        );
+        assert_eq!(
+            OutcomeKind::from_classification("oracle_disagreement"),
             OutcomeKind::InterestingSemantic
         );
         assert_eq!(

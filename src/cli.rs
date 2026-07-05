@@ -302,6 +302,8 @@ pub struct OracleArgs {
     pub report: Option<String>,
     #[arg(long, help = "Optional machine-readable JSON report output file")]
     pub json_report: Option<String>,
+    #[arg(long, help = "Optional triage bucket report for oracle disagreements")]
+    pub bucket_report: Option<String>,
     #[arg(long, default_value = "30", help = "Per-tool timeout in seconds")]
     pub exec_timeout: u64,
     #[arg(

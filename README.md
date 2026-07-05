@@ -395,7 +395,8 @@ erofs-rs oracle \
     --dump build/erofs-utils/dump/dump.erofs \
     --kernel-report build/kernel-replay.json \
     --report /tmp/oracle-report.txt \
-    --json-report /tmp/oracle-report.json
+    --json-report /tmp/oracle-report.json \
+    --bucket-report /tmp/oracle-buckets.json
 ```
 
 The oracle report compares the Rust structural parser, Rust strict parser,
@@ -406,7 +407,11 @@ interesting findings so parser/tool/checksum/sanitizer/kernel mismatches can be
 triaged separately from ordinary malformed image rejections. `--json-report`
 writes the input SHA-256, the same checks, pairwise matrix verdicts, and
 interesting-finding count with the stable `erofs-rs.oracle-report.v1` schema
-for campaign automation. The parser rejects malformed input digests, duplicate
+for campaign automation. `--bucket-report` emits disagreements as
+`erofs-rs.fuzz-buckets.v1` entries with the `oracle_disagreement`
+classification and `interesting_semantic` outcome kind so `erofs-rs triage`
+can merge them with fuzz campaign buckets. The parser rejects malformed input
+digests, duplicate
 checks, duplicate matrix rows, inconsistent matrix verdicts, and matrix rows
 that reference checks missing from the report or copy status/classification
 values that differ from the referenced checks. It also rejects skipped checks

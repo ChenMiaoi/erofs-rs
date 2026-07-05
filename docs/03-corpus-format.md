@@ -207,7 +207,8 @@ erofs-rs oracle \
     --input corpus/seeds/single.erofs \
     --fsck build/erofs-utils/fsck/fsck.erofs \
     --kernel-report build/kernel-replay.json \
-    --json-report build/oracle-report.json
+    --json-report build/oracle-report.json \
+    --bucket-report build/oracle-buckets.json
 ```
 
 The report stores the input path, input SHA-256, individual check verdicts,
@@ -221,6 +222,11 @@ classification, duplicate checks, duplicate matrix rows, matrix rows that
 reference checks missing from the report, rows that copy status or
 classification values that differ from the referenced checks, and reports that
 omit the canonical row for any check pair.
+When `--bucket-report` is supplied, each oracle disagreement is also written as
+an `erofs-rs.fuzz-buckets.v1` bucket with the `oracle_disagreement`
+classification and `interesting_semantic` outcome kind. That lets
+`erofs-rs triage` merge oracle findings with campaign bucket reports instead
+of requiring a separate disagreement review path.
 When `--kernel-report` is supplied, the oracle parses the existing
 `erofs-rs.kernel-replay.v1` JSON report and adds it as a matrix check instead
 of starting QEMU itself.

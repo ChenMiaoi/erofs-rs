@@ -1037,6 +1037,7 @@ fn test_oracle_report_with_dump_check() {
     let tmp = TempDir::new().unwrap();
     let report = tmp.path().join("oracle-report.txt");
     let json_report = tmp.path().join("oracle-report.json");
+    let bucket_report = tmp.path().join("oracle-buckets.json");
     let kernel_report = tmp.path().join("kernel-replay.json");
     fs::write(
         &kernel_report,
@@ -1062,6 +1063,7 @@ fn test_oracle_report_with_dump_check() {
         kernel_report: Some(kernel_report.to_string_lossy().to_string()),
         report: Some(report.to_string_lossy().to_string()),
         json_report: Some(json_report.to_string_lossy().to_string()),
+        bucket_report: Some(bucket_report.to_string_lossy().to_string()),
         exec_timeout: 1,
         max_output_bytes: 1024,
         no_kill_process_group: false,
@@ -1157,6 +1159,15 @@ fn test_oracle_report_with_dump_check() {
                 && entry["verdict"] == "agree"
                 && entry["disagrees"] == false)
     );
+
+    let bucket_content = fs::read_to_string(&bucket_report).unwrap();
+    let bucket_report = erofs_rs::triage::parse_fuzz_bucket_report(&bucket_content).unwrap();
+    assert_eq!(
+        bucket_report.schema,
+        erofs_rs::triage::FUZZ_BUCKET_REPORT_SCHEMA
+    );
+    assert_eq!(bucket_report.actionable_findings, 0);
+    assert!(bucket_report.buckets.is_empty());
 }
 
 #[test]

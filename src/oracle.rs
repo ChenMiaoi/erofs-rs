@@ -2,10 +2,14 @@ use crate::checksum::fix_checksum;
 use crate::cli::OracleArgs;
 use crate::dirent::locate_dirents_in_image;
 use crate::fsck::{ExecLimits, FsckResult, run_fsck_with_limits};
+use crate::fuzz::OutcomeKind;
 use crate::image::{Image, read_image, write_image};
 use crate::inode::locate_inodes;
 use crate::kernel_replay::{KernelReplayOutcome, parse_kernel_replay_report};
 use crate::parse::{ParseMode, parse_image};
+use crate::triage::{
+    FUZZ_BUCKET_REPORT_SCHEMA, FuzzBucket, FuzzBucketReport, validate_fuzz_bucket_report,
+};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -17,6 +21,9 @@ use tempfile::NamedTempFile;
 use thiserror::Error;
 
 pub const ORACLE_REPORT_SCHEMA: &str = "erofs-rs.oracle-report.v1";
+const TOOL_NAME: &str = "erofs-rs";
+const TOOL_VERSION: &str = env!("CARGO_PKG_VERSION");
+const ORACLE_DISAGREEMENT_CLASSIFICATION: &str = "oracle_disagreement";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum OracleStatus {
@@ -786,6 +793,64 @@ fn json_report(
     }
 }
 
+fn oracle_bucket_reason(entry: &OracleMatrixEntry) -> String {
+    format!(
+        "{} disagrees: {}={}/{}, {}={}/{}",
+        entry.name,
+        entry.left,
+        entry.left_status,
+        entry.left_classification,
+        entry.right,
+        entry.right_status,
+        entry.right_classification
+    )
+}
+
+fn oracle_bucket_report(
+    input: &Path,
+    text_report_path: &str,
+    matrix: &[OracleMatrixEntry],
+) -> Result<FuzzBucketReport> {
+    let outcome_kind = OutcomeKind::from_classification(ORACLE_DISAGREEMENT_CLASSIFICATION);
+    let example_seed_name = input
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("oracle-input")
+        .to_string();
+    let mut buckets = Vec::new();
+    for (index, entry) in matrix.iter().filter(|entry| entry.disagrees).enumerate() {
+        let first_iteration =
+            u64::try_from(index + 1).context("oracle disagreement index overflows u64")?;
+        let reason = oracle_bucket_reason(entry);
+        buckets.push(FuzzBucket {
+            signature: format!("{ORACLE_DISAGREEMENT_CLASSIFICATION}: {}", entry.name),
+            classification: ORACLE_DISAGREEMENT_CLASSIFICATION.to_string(),
+            outcome_kind: outcome_kind.label().to_string(),
+            count: 1,
+            first_iteration,
+            example_seed_name: example_seed_name.clone(),
+            reason,
+        });
+    }
+
+    let finding_count =
+        u64::try_from(buckets.len()).context("oracle finding count overflows u64")?;
+    Ok(FuzzBucketReport {
+        schema: FUZZ_BUCKET_REPORT_SCHEMA.to_string(),
+        tool: TOOL_NAME.to_string(),
+        tool_version: TOOL_VERSION.to_string(),
+        rng_seed: 0,
+        duration_millis: 0,
+        iterations: finding_count.max(1),
+        unique_images: finding_count,
+        seed_count: 1,
+        actionable_findings: finding_count,
+        text_report_path: text_report_path.to_string(),
+        buckets,
+    })
+}
+
 fn write_json_report(path: &str, report: &OracleJsonReport) -> Result<()> {
     validate_oracle_json_report(report)
         .map_err(|error| anyhow::anyhow!("generated oracle JSON report is invalid: {error}"))?;
@@ -793,6 +858,16 @@ fn write_json_report(path: &str, report: &OracleJsonReport) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("failed to encode oracle JSON report: {e}"))?;
     fs::write(path, json + "\n")
         .map_err(|e| anyhow::anyhow!("failed to write oracle JSON report {path}: {e}"))?;
+    Ok(())
+}
+
+fn write_bucket_report(path: &str, report: &FuzzBucketReport) -> Result<()> {
+    validate_fuzz_bucket_report(report)
+        .map_err(|error| anyhow::anyhow!("generated oracle bucket report is invalid: {error}"))?;
+    let json = serde_json::to_string_pretty(report)
+        .map_err(|e| anyhow::anyhow!("failed to encode oracle bucket report: {e}"))?;
+    fs::write(path, json + "\n")
+        .map_err(|e| anyhow::anyhow!("failed to write oracle bucket report {path}: {e}"))?;
     Ok(())
 }
 
@@ -833,6 +908,15 @@ pub fn run(args: &OracleArgs) -> Result<()> {
         let json = json_report(input, &input_sha256, &checks, &matrix);
         write_json_report(report_path, &json)?;
     }
+    if let Some(report_path) = &args.bucket_report {
+        let text_report_path = args
+            .report
+            .clone()
+            .or_else(|| args.json_report.clone())
+            .unwrap_or_else(|| input.to_string_lossy().to_string());
+        let buckets = oracle_bucket_report(input, &text_report_path, &matrix)?;
+        write_bucket_report(report_path, &buckets)?;
+    }
 
     print!("{report}");
     Ok(())
@@ -842,11 +926,13 @@ pub fn run(args: &OracleArgs) -> Result<()> {
 mod tests {
     use super::{
         ORACLE_REPORT_SCHEMA, OracleCheck, OracleJsonReportError, OracleStatus, compare_checks,
-        parse_oracle_json_report, run_rust_strict_parser, run_rust_tolerant_parser,
+        oracle_bucket_report, parse_oracle_json_report, run_rust_strict_parser,
+        run_rust_tolerant_parser,
     };
     use crate::image::{FieldWidth, read_image};
     use crate::parse::{ParseMode, parse_image};
-    use std::path::PathBuf;
+    use crate::triage::parse_fuzz_bucket_report;
+    use std::path::{Path, PathBuf};
 
     fn fixture(name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -901,6 +987,35 @@ mod tests {
         );
         assert_eq!(report.checks.len(), 2);
         assert_eq!(report.interesting_findings, 1);
+    }
+
+    #[test]
+    fn oracle_bucket_report_maps_disagreements_to_triage_buckets() {
+        let oracle = parse_oracle_json_report(VALID_JSON_REPORT).unwrap();
+        let report = oracle_bucket_report(
+            Path::new("sample.erofs"),
+            "oracle-report.txt",
+            &oracle.matrix,
+        )
+        .unwrap();
+        let content = serde_json::to_string(&report).unwrap();
+
+        let parsed = parse_fuzz_bucket_report(&content).unwrap();
+
+        assert_eq!(parsed.schema, crate::triage::FUZZ_BUCKET_REPORT_SCHEMA);
+        assert_eq!(parsed.actionable_findings, 1);
+        assert_eq!(parsed.buckets.len(), 1);
+        assert_eq!(parsed.buckets[0].classification, "oracle_disagreement");
+        assert_eq!(parsed.buckets[0].outcome_kind, "interesting_semantic");
+        assert_eq!(
+            parsed.buckets[0].signature,
+            "oracle_disagreement: rust_parser_vs_fsck"
+        );
+        assert!(
+            parsed.buckets[0]
+                .reason
+                .contains("rust_parser=accepted/accepted")
+        );
     }
 
     #[test]
