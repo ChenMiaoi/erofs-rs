@@ -8,6 +8,7 @@ use crate::kernel_replay::{KernelReplayOutcome, parse_kernel_replay_report};
 use crate::parse::{ParseMode, parse_image};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
@@ -51,6 +52,7 @@ struct OracleCheck {
 pub struct OracleJsonReport {
     pub schema: String,
     pub input: String,
+    pub input_sha256: Option<String>,
     pub checks: Vec<OracleJsonCheck>,
     pub matrix: Vec<OracleMatrixEntry>,
     pub interesting_findings: usize,
@@ -89,6 +91,8 @@ pub enum OracleJsonReportError {
     EmptyField(&'static str),
     #[error("oracle JSON report list {0} is empty")]
     EmptyList(&'static str),
+    #[error("oracle JSON report field {field} has invalid SHA-256 digest: {sha256}")]
+    InvalidSha256 { field: &'static str, sha256: String },
     #[error("oracle JSON report field {field} has invalid status: {status}")]
     InvalidStatus { field: &'static str, status: String },
     #[error("oracle JSON report field {field} has invalid verdict: {verdict}")]
@@ -129,6 +133,9 @@ pub fn validate_oracle_json_report(
         ));
     }
     require_nonempty("input", &report.input)?;
+    if let Some(input_sha256) = &report.input_sha256 {
+        require_sha256("input_sha256", input_sha256)?;
+    }
     if report.checks.is_empty() {
         return Err(OracleJsonReportError::EmptyList("checks"));
     }
@@ -255,6 +262,19 @@ fn require_nonempty(
 ) -> std::result::Result<(), OracleJsonReportError> {
     if value.is_empty() {
         return Err(OracleJsonReportError::EmptyField(field));
+    }
+    Ok(())
+}
+
+fn require_sha256(
+    field: &'static str,
+    value: &str,
+) -> std::result::Result<(), OracleJsonReportError> {
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(OracleJsonReportError::InvalidSha256 {
+            field,
+            sha256: value.to_string(),
+        });
     }
     Ok(())
 }
@@ -630,12 +650,14 @@ fn render_report(input: &Path, checks: &[OracleCheck], matrix: &[OracleMatrixEnt
 
 fn json_report(
     input: &Path,
+    input_sha256: &str,
     checks: &[OracleCheck],
     matrix: &[OracleMatrixEntry],
 ) -> OracleJsonReport {
     OracleJsonReport {
         schema: ORACLE_REPORT_SCHEMA.to_string(),
         input: input.to_string_lossy().to_string(),
+        input_sha256: Some(input_sha256.to_string()),
         checks: checks
             .iter()
             .map(|check| OracleJsonCheck {
@@ -658,6 +680,12 @@ fn write_json_report(path: &str, report: &OracleJsonReport) -> Result<()> {
     Ok(())
 }
 
+fn image_sha256(image: &Image) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(image.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
 pub fn run(args: &OracleArgs) -> Result<()> {
     let input = Path::new(&args.input);
     if !input.exists() {
@@ -665,6 +693,7 @@ pub fn run(args: &OracleArgs) -> Result<()> {
     }
 
     let image = read_image(input).with_context(|| format!("failed to read {}", input.display()))?;
+    let input_sha256 = image_sha256(&image);
     let limits = limits_from_args(args);
     let checks = vec![
         run_rust_parser(&image),
@@ -685,7 +714,7 @@ pub fn run(args: &OracleArgs) -> Result<()> {
             .map_err(|e| anyhow::anyhow!("failed to write oracle report {report_path}: {e}"))?;
     }
     if let Some(report_path) = &args.json_report {
-        let json = json_report(input, &checks, &matrix);
+        let json = json_report(input, &input_sha256, &checks, &matrix);
         write_json_report(report_path, &json)?;
     }
 
@@ -713,6 +742,7 @@ mod tests {
     const VALID_JSON_REPORT: &str = r#"{
   "schema": "erofs-rs.oracle-report.v1",
   "input": "sample.erofs",
+  "input_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   "checks": [
     {
       "name": "rust_parser",
@@ -749,8 +779,23 @@ mod tests {
 
         assert_eq!(report.schema, ORACLE_REPORT_SCHEMA);
         assert_eq!(report.input, "sample.erofs");
+        assert_eq!(
+            report.input_sha256.as_deref(),
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        );
         assert_eq!(report.checks.len(), 2);
         assert_eq!(report.interesting_findings, 1);
+    }
+
+    #[test]
+    fn oracle_json_report_parser_accepts_legacy_report_without_input_hash() {
+        let mut report: serde_json::Value = serde_json::from_str(VALID_JSON_REPORT).unwrap();
+        report.as_object_mut().unwrap().remove("input_sha256");
+        let report = serde_json::to_string(&report).unwrap();
+
+        let report = parse_oracle_json_report(&report).unwrap();
+
+        assert_eq!(report.input_sha256, None);
     }
 
     #[test]
@@ -761,6 +806,24 @@ mod tests {
         let error = parse_oracle_json_report(&report).unwrap_err();
 
         assert!(matches!(error, OracleJsonReportError::UnsupportedSchema(_)));
+    }
+
+    #[test]
+    fn oracle_json_report_parser_rejects_invalid_input_hash() {
+        let report = VALID_JSON_REPORT.replace(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "short",
+        );
+
+        let error = parse_oracle_json_report(&report).unwrap_err();
+
+        assert!(matches!(
+            error,
+            OracleJsonReportError::InvalidSha256 {
+                field: "input_sha256",
+                ..
+            }
+        ));
     }
 
     #[test]

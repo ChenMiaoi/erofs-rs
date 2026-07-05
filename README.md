@@ -375,12 +375,12 @@ optional `dump.erofs -s`, an optional `erofs-rs.kernel-replay.v1` report, and
 `fsck.erofs` after Rust checksum repair. Disagreements are reported as
 interesting findings so parser/tool/checksum/sanitizer/kernel mismatches can be
 triaged separately from ordinary malformed image rejections. `--json-report`
-writes the same checks, pairwise matrix verdicts, and interesting-finding count
-with the stable `erofs-rs.oracle-report.v1` schema for campaign automation.
-The parser rejects duplicate checks, duplicate matrix rows, and matrix rows
-that reference checks missing from the report. It also requires the matrix to
-contain the canonical row for every check pair so incomplete oracle reports
-cannot hide a disagreement.
+writes the input SHA-256, the same checks, pairwise matrix verdicts, and
+interesting-finding count with the stable `erofs-rs.oracle-report.v1` schema
+for campaign automation. The parser rejects malformed input digests, duplicate
+checks, duplicate matrix rows, and matrix rows that reference checks missing
+from the report. It also requires the matrix to contain the canonical row for
+every check pair so incomplete oracle reports cannot hide a disagreement.
 
 ## Library usage
 

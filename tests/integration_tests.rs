@@ -1091,6 +1091,7 @@ fn test_oracle_report_with_dump_check() {
     erofs_rs::oracle::parse_oracle_json_report(&json_content).unwrap();
     let json: serde_json::Value = serde_json::from_str(&json_content).unwrap();
     assert_eq!(json["schema"], "erofs-rs.oracle-report.v1");
+    assert_eq!(json["input_sha256"], file_sha256(&fixture("single.erofs")));
     assert_eq!(json["checks"].as_array().unwrap().len(), 8);
     assert_eq!(json["matrix"].as_array().unwrap().len(), 28);
     assert_eq!(json["interesting_findings"], 0);
