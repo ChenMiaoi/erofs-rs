@@ -40,3 +40,24 @@ path = "fuzz_targets/checksum_fix_no_panic.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "xattr_parse"
+path = "fuzz_targets/xattr_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "chunk_parse"
+path = "fuzz_targets/chunk_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "compression_parse"
+path = "fuzz_targets/compression_parse.rs"
+test = false
+doc = false
+bench = false

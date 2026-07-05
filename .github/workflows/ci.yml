@@ -68,6 +68,9 @@ jobs:
           cargo +nightly fuzz run inode_locate -- -runs=1000
           cargo +nightly fuzz run dirent_locate -- -runs=1000
           cargo +nightly fuzz run checksum_fix_no_panic -- -runs=1000
+          cargo +nightly fuzz run xattr_parse -- -runs=1000
+          cargo +nightly fuzz run chunk_parse -- -runs=1000
+          cargo +nightly fuzz run compression_parse -- -runs=1000
 
   userspace-integration:
     name: Userspace fsck and fuzz smoke
